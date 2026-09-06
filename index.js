@@ -49,11 +49,17 @@ const CLOTHING_SLOT_UPDATE_SCHEMA = {
 
 function buildDefaultClothingDiffPrompt(message) {
     const exampleShape = JSON.stringify(Object.fromEntries(CLOTHING_SLOTS.map((slot) => [slot, false])));
+    const categoryHints = CLOTHING_SLOTS
+        .map((slot) => `- ${slot}: ${CLOTHING_DIFF_SCHEMA.properties[slot].description}`)
+        .join("\n");
 
     return `Analyze ONLY the message below (not prior context). For each clothing category,
 determine whether the message contains explicit information about it — a
 description, addition, removal, or state/condition change (stain, tear,
 wetness, damage) to an existing item.
+
+Clothing categories:
+${categoryHints}
 
 Do not infer from context outside this message. A character simply moving,
 speaking, or being described emotionally does NOT count unless clothing,
@@ -70,7 +76,9 @@ ${exampleShape}`;
 }
 
 function buildClothingSlotUpdatePrompt(slot, currentState, message) {
-    return `Current state of ${slot}: "${currentState}"
+    return `Clothing category "${slot}": ${CLOTHING_DIFF_SCHEMA.properties[slot].description}
+
+Current state of ${slot}: "${currentState}"
 
 Message: "${message}"
 
