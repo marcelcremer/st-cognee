@@ -7,7 +7,6 @@ const extensionName = "st-psychograph";
 const extensionFolderPath = `scripts/extensions/third-party/${extensionName}`;
 
 const STATE_AREAS = [
-    { key: "general", id: "general" },
     { key: "clothes", id: "clothes" },
     { key: "physicalState", id: "physical_state" },
     { key: "stateOfMind", id: "state_of_mind" },
