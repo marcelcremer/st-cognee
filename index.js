@@ -16,12 +16,21 @@ const STATE_AREAS = [
 ];
 
 const CLOTHING_SLOTS = ["top", "bottom", "underwear", "legwear", "footwear", "accessories", "hair", "makeup"];
-const CLOTHING_DIFF_MAX_TOKENS = 200;
-const CLOTHING_SLOT_UPDATE_MAX_TOKENS = 150;
+const CLOTHING_DIFF_MAX_TOKENS = 250;
+const CLOTHING_SLOT_UPDATE_MAX_TOKENS = 200;
 
+// "reasoning" is declared first (and listed first in `required`) so that on
+// backends doing real grammar-constrained decoding, the model is forced to
+// think through each category in prose BEFORE it has to commit to the
+// booleans — a schema with the answer fields first forces a snap judgment
+// with no way to reconsider. Key order matters here, not just presence.
 const CLOTHING_DIFF_SCHEMA = {
     type: "object",
     properties: {
+        reasoning: {
+            type: "string",
+            description: "One short clause per clothing category (top, bottom, underwear, legwear, footwear, accessories, hair, makeup, in that order), noting whether the message explicitly touches on it and why.",
+        },
         top: { type: "boolean", description: "True if the message contains any explicit info about tops (shirts, jackets, coats, etc.) — new item, layering, removal, or state/damage change." },
         bottom: { type: "boolean", description: "True if the message mentions pants, skirts, shorts, a dress's lower half, etc. — same criteria as top." },
         underwear: { type: "boolean", description: "True if bra, panties, boxers, etc. are mentioned or implied to change." },
@@ -31,52 +40,53 @@ const CLOTHING_DIFF_SCHEMA = {
         hair: { type: "boolean", description: "True if hairstyle is described, mentioned, or changed (not just touched/moved)." },
         makeup: { type: "boolean", description: "True if makeup is applied, described, smeared, or removed." },
     },
-    required: CLOTHING_SLOTS,
+    required: ["reasoning", ...CLOTHING_SLOTS],
     additionalProperties: false,
 };
 
 const CLOTHING_SLOT_UPDATE_SCHEMA = {
     type: "object",
     properties: {
+        reasoning: {
+            type: "string",
+            description: "One short sentence working through which of the update rules below applies, before answering.",
+        },
         state: {
             type: "string",
             description: "The full new state of this slot after applying the message. Comma-separated list of items if multiple. Use \"none\" if nothing is worn in this slot.",
         },
     },
-    required: ["state"],
+    required: ["reasoning", "state"],
     additionalProperties: false,
 };
 
 function buildDefaultClothingDiffPrompt(message) {
-    const exampleShape = JSON.stringify(Object.fromEntries(CLOTHING_SLOTS.map((slot) => [slot, false])));
-    const categoryHints = CLOTHING_SLOTS
-        .map((slot) => `- ${slot}: ${CLOTHING_DIFF_SCHEMA.properties[slot].description}`)
-        .join("\n");
+    const exampleShape = JSON.stringify({
+        reasoning: "...",
+        ...Object.fromEntries(CLOTHING_SLOTS.map((slot) => [slot, false])),
+    });
 
-    return `Analyze ONLY the message below (not prior context). For each clothing category,
-determine whether the message contains explicit information about it — a
-description, addition, removal, or state/condition change (stain, tear,
-wetness, damage) to an existing item.
+    return `Analyze ONLY the message below (not prior context). For each clothing
+slot, determine whether the message contains any information about it.
+Slots represent where clothing is worn, not specifically a category.
 
-Clothing categories:
-${categoryHints}
+If you find any change for a slot, mark it true. When there is no
+change about the slot, mark it false.
 
-Do not infer from context outside this message. A character simply moving,
-speaking, or being described emotionally does NOT count unless clothing,
-hair, or makeup is explicitly touched on. When in doubt, false.
+Reasoning is just for debug, so one concise sentence is enough.
 
 Message:
 """
 ${message}
 """
 
-Respond with ONLY a JSON object (no explanation, no markdown code fence),
-using exactly this shape — all 8 keys present, true/false values only:
+Respond with ONLY a JSON object (no markdown code fence). Fill in
+"reasoning" first, then the 8 booleans, using exactly this shape:
 ${exampleShape}`;
 }
 
 function buildClothingSlotUpdatePrompt(slot, currentState, message) {
-    return `Clothing category "${slot}": ${CLOTHING_DIFF_SCHEMA.properties[slot].description}
+    return `Clothing slot "${slot}" (where clothing is worn, not a category).
 
 Current state of ${slot}: "${currentState}"
 
@@ -94,8 +104,11 @@ Update the ${slot} state based on this message.
 - If nothing actually changed despite the trigger, return the state unchanged.
 - Do not invent details that were not stated in the message.
 
-Respond with ONLY a JSON object (no explanation, no markdown code fence)
-of the form {"state": "..."}.`;
+Reasoning is just for debug, so one concise sentence is enough.
+
+Respond with ONLY a JSON object (no markdown code fence). Fill in
+"reasoning" first, then "state", using exactly this shape:
+{"reasoning": "...", "state": "..."}.`;
 }
 
 const defaultSettings = {
@@ -278,6 +291,7 @@ async function runClothingExtraction(message) {
     let diff;
     try {
         diff = await sendJsonSchemaRequest(profileId, "clothing_diff", CLOTHING_DIFF_SCHEMA, diffPrompt, CLOTHING_DIFF_MAX_TOKENS);
+        console.log("[Psychograph] Clothing diff reasoning:", diff.reasoning);
     } catch (error) {
         console.error("[Psychograph] Clothing diff call failed:", error);
         return;
@@ -300,6 +314,7 @@ async function runClothingExtraction(message) {
                 updatePrompt,
                 CLOTHING_SLOT_UPDATE_MAX_TOKENS,
             );
+            console.log(`[Psychograph] Clothing update reasoning for "${slot}":`, update.reasoning);
             clothesArea.slots[slot] = update.state;
             $(`#psychograph_state_clothes_slot_${slot}`).val(update.state);
         } catch (error) {
