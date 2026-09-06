@@ -1,0 +1,13 @@
+#psychograph_settings h4 {
+    margin: 0.5em 0 0.25em;
+}
+
+#psychograph_settings small {
+    display: block;
+    opacity: 0.8;
+    margin-bottom: 0.5em;
+}
+
+#psychograph_settings .inline-drawer {
+    margin-bottom: 0.25em;
+}

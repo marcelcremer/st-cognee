@@ -1,0 +1,12 @@
+{
+    "display_name": "Psychograph",
+    "loading_order": 100,
+    "requires": [],
+    "optional": [],
+    "js": "index.js",
+    "css": "style.css",
+    "author": "marcelcremer",
+    "version": "0.1.0",
+    "homePage": "https://github.com/marcelcremer/st-cognee",
+    "auto_update": true
+}
