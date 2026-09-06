@@ -59,7 +59,11 @@ hair, or makeup is explicitly touched on. When in doubt, false.
 Message:
 """
 {{message}}
-"""`;
+"""
+
+Respond with ONLY a JSON object (no explanation, no markdown code fence)
+with exactly these boolean keys: top, bottom, underwear, legwear,
+footwear, accessories, hair, makeup.`;
 
 function buildClothingSlotUpdatePrompt(slot, currentState, message) {
     return `Current state of ${slot}: "${currentState}"
@@ -76,7 +80,10 @@ Update the ${slot} state based on this message.
   in parentheses (max ~5 words), e.g. "white blouse (coffee stain)".
 - If an item is explicitly removed and nothing replaces it, output "none".
 - If nothing actually changed despite the trigger, return the state unchanged.
-- Do not invent details that were not stated in the message.`;
+- Do not invent details that were not stated in the message.
+
+Respond with ONLY a JSON object (no explanation, no markdown code fence)
+of the form {"state": "..."}.`;
 }
 
 const defaultSettings = {
@@ -212,6 +219,20 @@ function bindSettingsEvents() {
     eventSource.on(event_types.CONNECTION_PROFILE_DELETED, populateConnectionProfiles);
 }
 
+function parseJsonResponse(content) {
+    const text = String(content).trim();
+    try {
+        return JSON.parse(text);
+    } catch (error) {
+        const withoutCodeFence = text.replace(/^```(?:json)?\s*|\s*```$/g, "");
+        const match = withoutCodeFence.match(/\{[\s\S]*\}/);
+        if (!match) {
+            throw error;
+        }
+        return JSON.parse(match[0]);
+    }
+}
+
 async function sendJsonSchemaRequest(profileId, schemaName, schema, prompt, maxTokens) {
     const profile = ConnectionManagerRequestService.getProfile(profileId);
     const overridePayload = profile.mode === "tc"
@@ -226,7 +247,7 @@ async function sendJsonSchemaRequest(profileId, schemaName, schema, prompt, maxT
         overridePayload,
     );
 
-    return JSON.parse(response.content);
+    return parseJsonResponse(response.content);
 }
 
 async function runClothingExtraction(message) {
