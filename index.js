@@ -445,6 +445,26 @@ async function rerunClothingExtractionNow() {
     await runClothingExtraction(lastMessage.mes);
 }
 
+async function initClothesFromDescription() {
+    const settings = ensureSettings();
+    const target = settings.state.target;
+
+    const context = getContext();
+    const fields = context.getCharacterCardFields();
+    const description = target === "user" ? fields.persona : fields.description;
+
+    if (!description || !description.trim()) {
+        toastr.warning(
+            target === "user" ? "No persona description found." : "No character description found.",
+            "Psychograph",
+        );
+        return;
+    }
+
+    toastr.info("Initializing clothing state from description…", "Psychograph");
+    await runClothingExtraction(description);
+}
+
 function togglePsychographSubmenu(anchorElement) {
     const submenu = $("#psychograph_submenu");
 
@@ -513,6 +533,10 @@ function buildToolbarButton() {
                 <div class="fa-solid fa-shirt extensionsMenuExtensionButton"></div>
                 <span>Clothes</span>
             </div>
+            <div id="psychograph_action_init_clothes" class="list-group-item">
+                <div class="fa-solid fa-bolt extensionsMenuExtensionButton"></div>
+                <span>Init Clothes</span>
+            </div>
         </div>
     `);
 
@@ -532,6 +556,11 @@ function buildToolbarButton() {
     $("#psychograph_action_clothes").on("click", async function () {
         $("#psychograph_submenu").removeClass("shown");
         await rerunClothingExtractionNow();
+    });
+
+    $("#psychograph_action_init_clothes").on("click", async function () {
+        $("#psychograph_submenu").removeClass("shown");
+        await initClothesFromDescription();
     });
 }
 
