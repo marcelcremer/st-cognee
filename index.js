@@ -399,14 +399,26 @@ function buildToolbarButton() {
         return;
     }
 
-    const container = $("#nonQRFormItems");
-    if (container.length === 0) {
+    const nonQrFormItems = document.getElementById("nonQRFormItems");
+    if (!nonQrFormItems) {
         console.warn("[Psychograph] Toolbar container (#nonQRFormItems) not found, skipping menu button.");
         return;
     }
 
-    container.append(`
-        <div id="psychograph_menu_button" class="fa-solid fa-brain interactable" title="Psychograph" tabindex="0"></div>
+    // A sibling container inserted right after #nonQRFormItems, the same
+    // place/pattern the GuidedGenerations extension uses for its own button
+    // row — puts our button next to it rather than squeezed into the plain
+    // icon row (which also had a different, cramped layout context).
+    let buttonContainer = document.getElementById("psychograph_button_container");
+    if (!buttonContainer) {
+        buttonContainer = document.createElement("div");
+        buttonContainer.id = "psychograph_button_container";
+        buttonContainer.className = "psychograph-button-container";
+        nonQrFormItems.parentNode.insertBefore(buttonContainer, nonQrFormItems.nextSibling);
+    }
+
+    $(buttonContainer).append(`
+        <div id="psychograph_menu_button" class="psychograph-toolbar-button fa-solid fa-brain interactable" title="Psychograph" tabindex="0"></div>
     `);
 
     $("body").append(`
