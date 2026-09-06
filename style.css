@@ -25,6 +25,8 @@
     gap: 5px;
     padding: 5px;
     align-items: center;
+    justify-content: flex-end;
+    width: 100%;
 }
 
 .psychograph-toolbar-button {
