@@ -72,6 +72,24 @@ This applies to every layer, not just initial scaffolding — resist adding a
 state-management library, a graph-viz library, etc. unless the task genuinely
 can't be done without one.
 
+## Extraction prompt wording
+
+The wording of LLM extraction prompts (e.g. `buildDefaultClothingDiffPrompt`,
+`buildClothingSlotUpdatePrompt` in `index.js`, and any future prompt built
+the same way) is tuned empirically against the user's own backend/model, not
+derived from first principles. Small local models are highly sensitive to
+phrasing in ways that aren't obvious from reading the prompt — an "improvement"
+that looks reasonable (adding example items per category, a JSON few-shot
+example, etc.) can silently make results worse by causing the model to
+overfit to the examples given instead of generalizing.
+
+Do not change the wording of an existing extraction prompt on your own
+initiative — not even a rephrase that looks harmless. Always show the
+proposed wording change and get explicit sign-off before editing, and let the
+user test it against their own model before treating it as done. Structural
+changes around a prompt (which variables it's built from, when it's called,
+its token budget) are fine to make normally; the prompt text itself is not.
+
 ## Branch workflow
 
 All work happens on feature branches. Never commit directly to `main`.
