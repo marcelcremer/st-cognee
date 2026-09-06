@@ -356,6 +356,83 @@ function bindChatEvents() {
     eventSource.on(event_types.MESSAGE_SWIPED, handleChatMessageEvent(event_types.MESSAGE_SWIPED));
 }
 
+const GUIDED_INJECT_ID = "psychograph_guide";
+
+async function withRestoredInput(action) {
+    const textarea = document.getElementById("send_textarea");
+    if (!textarea) {
+        console.error("[Psychograph] Guided action: #send_textarea not found.");
+        return;
+    }
+
+    const originalInput = textarea.value;
+    try {
+        await action(originalInput);
+    } finally {
+        textarea.value = originalInput;
+        textarea.dispatchEvent(new Event("input", { bubbles: true }));
+    }
+}
+
+async function injectGuideText(text) {
+    if (!text.trim()) {
+        return false;
+    }
+
+    const context = getContext();
+    await context.executeSlashCommandsWithOptions(
+        `/inject id=${GUIDED_INJECT_ID} position=chat ephemeral=true scan=true depth=0 role=system ${text} |`,
+    );
+    return true;
+}
+
+async function flushGuideInject() {
+    const context = getContext();
+    await context.executeSlashCommandsWithOptions(`/flushinject ${GUIDED_INJECT_ID} |`);
+}
+
+async function guidedMessage() {
+    await withRestoredInput(async (originalInput) => {
+        const injected = await injectGuideText(originalInput);
+        try {
+            const context = getContext();
+            await context.executeSlashCommandsWithOptions("/trigger await=true |");
+        } finally {
+            if (injected) {
+                await flushGuideInject();
+            }
+        }
+    });
+}
+
+async function guidedSwipe() {
+    await withRestoredInput(async (originalInput) => {
+        const injected = await injectGuideText(originalInput);
+        try {
+            const context = getContext();
+            if (!context.swipe?.right) {
+                toastr.error("This SillyTavern version doesn't support swipe.right().", "Psychograph");
+                return;
+            }
+            await context.swipe.right();
+        } finally {
+            if (injected) {
+                await flushGuideInject();
+            }
+        }
+    });
+}
+
+async function guidedContinue() {
+    await withRestoredInput(async (originalInput) => {
+        const context = getContext();
+        const command = originalInput.trim()
+            ? `/continue await=true ${originalInput} |`
+            : "/continue await=true |";
+        await context.executeSlashCommandsWithOptions(command);
+    });
+}
+
 async function rerunClothingExtractionNow() {
     const chat = getContext().chat;
     const lastMessage = chat[chat.length - 1];
@@ -419,7 +496,14 @@ function buildToolbarButton() {
 
     $(buttonContainer).append(`
         <div id="psychograph_menu_button" class="psychograph-toolbar-button fa-solid fa-brain interactable" title="Psychograph" tabindex="0"></div>
+        <div id="psychograph_guided_message_button" class="psychograph-toolbar-button fa-solid fa-comment-dots interactable" title="Guided Message" tabindex="0"></div>
+        <div id="psychograph_guided_swipe_button" class="psychograph-toolbar-button fa-solid fa-forward interactable" title="Guided Swipe" tabindex="0"></div>
+        <div id="psychograph_guided_continue_button" class="psychograph-toolbar-button fa-solid fa-arrow-right interactable" title="Guided Continue" tabindex="0"></div>
     `);
+
+    $("#psychograph_guided_message_button").on("click", guidedMessage);
+    $("#psychograph_guided_swipe_button").on("click", guidedSwipe);
+    $("#psychograph_guided_continue_button").on("click", guidedContinue);
 
     $("body").append(`
         <div id="psychograph_submenu" class="psychograph-tools-menu">
