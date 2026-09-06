@@ -11,3 +11,70 @@
 #psychograph_settings .inline-drawer {
     margin-bottom: 0.25em;
 }
+
+#psychograph_settings .inline-drawer .inline-drawer-content {
+    padding-left: 0.75em;
+}
+
+#psychograph_settings textarea {
+    margin-top: 0.25em;
+}
+
+.psychograph-button-container {
+    display: flex;
+    gap: 5px;
+    padding: 5px;
+    align-items: center;
+    justify-content: space-between;
+    width: 100%;
+}
+
+.psychograph-guided-buttons {
+    display: flex;
+    gap: 5px;
+    align-items: center;
+}
+
+.psychograph-toolbar-button {
+    padding: 5px 8px;
+    border: 1px solid var(--SmartThemeBodyColor);
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 1.1em;
+    display: inline-flex;
+    align-items: center;
+    background-color: var(--SmartThemeBg);
+    color: var(--SmartThemeBodyColor);
+    transition: background-color 0.2s, color 0.2s;
+}
+
+.psychograph-toolbar-button:hover {
+    background-color: var(--SmartThemeHover);
+    color: var(--SmartThemeUi);
+}
+
+.psychograph-tools-menu {
+    position: absolute;
+    transform: translateY(-100%);
+    z-index: 9999;
+    display: none;
+    min-width: 10em;
+    border-radius: 6px;
+    overflow: hidden;
+    background-color: var(--SmartThemeBlurTintColor);
+    border: 1px solid var(--SmartThemeBorderColor, var(--SmartThemeBodyColor));
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.4);
+}
+
+.psychograph-tools-menu.shown {
+    display: block;
+}
+
+.psychograph-tools-menu .list-group-item {
+    display: flex;
+    align-items: center;
+    gap: 0.5em;
+    padding: 8px 12px;
+    cursor: pointer;
+    white-space: nowrap;
+}

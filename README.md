@@ -27,6 +27,11 @@ Nothing here is installable yet.
 
 - [`docs/memory-system.md`](docs/memory-system.md) — architecture and design
   rationale for the three memory layers.
+- [`docs/sillytavern-ui-notes.md`](docs/sillytavern-ui-notes.md) — general
+  SillyTavern UI/DOM findings from building this extension's toolbar/menu
+  (import paths, wand menu vs. toolbar row, the `hidden`-attribute pitfall,
+  connection-profile/schema-enforcement caveats). Not Psychograph-specific
+  — check before building UI for any future layer.
 - [`docs/reference/cognee-openapi.json`](docs/reference/cognee-openapi.json)
   — raw OpenAPI spec for the Cognee backend used by the Lore/Graph layer.
 - [`CLAUDE.md`](CLAUDE.md) — guidance for agents/contributors working in this
