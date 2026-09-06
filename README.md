@@ -37,3 +37,22 @@ Nothing here is installable yet.
 This project aims to stay as dependency-light as possible — see the "Build
 narrow" section in [`CLAUDE.md`](CLAUDE.md). All work happens on feature
 branches.
+
+Scaffolding is being developed and verified against SillyTavern `1.18.0`.
+
+### Installing the extension locally
+
+The extension root (`manifest.json`, `index.js`, `settings.html`, `style.css`)
+lives at the repo root, so it can be loaded the same way as any other
+third-party SillyTavern extension:
+
+- **Via SillyTavern's UI (recommended):** Extensions panel → Install
+  extension → paste this repository's git URL. SillyTavern clones it
+  directly into `public/scripts/extensions/third-party/`.
+- **Manual/local dev:** clone or symlink this repo into
+  `public/scripts/extensions/third-party/st-psychograph/` inside a
+  SillyTavern checkout, then reload SillyTavern.
+
+The extension currently shows as **Psychograph** in the Extensions panel;
+the settings panel only exposes placeholder sections — no memory logic is
+wired up yet (see [issue #1](https://github.com/marcelcremer/st-cognee/issues/1)).
