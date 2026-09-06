@@ -20,8 +20,13 @@
     margin-top: 0.25em;
 }
 
-#psychograph_wand_submenu {
+#psychograph_menu_button {
+    cursor: pointer;
+}
+
+#psychograph_submenu {
     position: absolute;
+    transform: translateY(-100%);
     z-index: 9999;
     min-width: 10em;
     border-radius: 6px;

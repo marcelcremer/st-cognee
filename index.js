@@ -368,60 +368,64 @@ async function rerunClothingExtractionNow() {
     await runClothingExtraction(lastMessage.mes);
 }
 
-function togglePsychographWandSubmenu(anchorElement) {
-    const submenu = $("#psychograph_wand_submenu");
+function togglePsychographSubmenu(anchorElement) {
+    const submenu = $("#psychograph_submenu");
     const wasHidden = submenu.prop("hidden");
     submenu.prop("hidden", true);
     if (!wasHidden) {
         return;
     }
 
-    const offset = $(anchorElement).offset();
+    // Anchored via getBoundingClientRect (not jQuery .offset()) and opened
+    // upward (CSS transform: translateY(-100%)) because this button lives in
+    // the bottom toolbar row — the first version lived inside SillyTavern's
+    // own wand menu, which closes itself on any item click before our click
+    // handler could read a stable position, so .offset() always saw a
+    // display:none ancestor and returned {top:0, left:0}. A dedicated,
+    // never-auto-closed button sidesteps that race entirely.
+    const rect = anchorElement.getBoundingClientRect();
     submenu.css({
-        top: offset.top,
-        left: offset.left + $(anchorElement).outerWidth(),
+        top: rect.top + window.scrollY - 5,
+        left: rect.left + window.scrollX,
     });
     submenu.prop("hidden", false);
 }
 
-function buildWandMenu() {
-    const wandMenu = $("#extensionsMenu");
-    if (wandMenu.length === 0) {
-        console.warn("[Psychograph] Wand menu (#extensionsMenu) not found, skipping menu button.");
+function buildToolbarButton() {
+    const container = $("#nonQRFormItems");
+    if (container.length === 0) {
+        console.warn("[Psychograph] Toolbar container (#nonQRFormItems) not found, skipping menu button.");
         return;
     }
 
-    wandMenu.append(`
-        <div id="psychograph_wand_menu_item" class="list-group-item flex-container flexGap5" title="Psychograph">
-            <div class="fa-solid fa-brain extensionsMenuExtensionButton"></div>
-            <span>Psychograph</span>
-        </div>
+    container.append(`
+        <div id="psychograph_menu_button" class="fa-solid fa-brain interactable" title="Psychograph" tabindex="0"></div>
     `);
 
     $("body").append(`
-        <div id="psychograph_wand_submenu" class="list-group" hidden>
-            <div id="psychograph_wand_action_clothes" class="list-group-item flex-container flexGap5">
+        <div id="psychograph_submenu" class="list-group" hidden>
+            <div id="psychograph_action_clothes" class="list-group-item flex-container flexGap5">
                 <div class="fa-solid fa-shirt extensionsMenuExtensionButton"></div>
                 <span>Clothes</span>
             </div>
         </div>
     `);
 
-    $("#psychograph_wand_menu_item").on("click", function (event) {
+    $("#psychograph_menu_button").on("click", function (event) {
         event.stopPropagation();
-        togglePsychographWandSubmenu(this);
+        togglePsychographSubmenu(this);
     });
 
-    $("#psychograph_wand_submenu").on("click", function (event) {
+    $("#psychograph_submenu").on("click", function (event) {
         event.stopPropagation();
     });
 
     $(document).on("click", function () {
-        $("#psychograph_wand_submenu").prop("hidden", true);
+        $("#psychograph_submenu").prop("hidden", true);
     });
 
-    $("#psychograph_wand_action_clothes").on("click", async function () {
-        $("#psychograph_wand_submenu").prop("hidden", true);
+    $("#psychograph_action_clothes").on("click", async function () {
+        $("#psychograph_submenu").prop("hidden", true);
         await rerunClothingExtractionNow();
     });
 }
@@ -432,7 +436,7 @@ jQuery(async () => {
 
     bindSettingsEvents();
     bindChatEvents();
-    buildWandMenu();
+    buildToolbarButton();
     renderSettings();
     populateConnectionProfiles();
 });
