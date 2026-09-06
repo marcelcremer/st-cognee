@@ -11,3 +11,11 @@
 #psychograph_settings .inline-drawer {
     margin-bottom: 0.25em;
 }
+
+#psychograph_settings .inline-drawer .inline-drawer-content {
+    padding-left: 0.75em;
+}
+
+#psychograph_settings textarea {
+    margin-top: 0.25em;
+}
