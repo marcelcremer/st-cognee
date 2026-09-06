@@ -370,28 +370,30 @@ async function rerunClothingExtractionNow() {
 
 function togglePsychographSubmenu(anchorElement) {
     const submenu = $("#psychograph_submenu");
-    const wasHidden = submenu.prop("hidden");
-    submenu.prop("hidden", true);
-    if (!wasHidden) {
+
+    if (submenu.is(":visible")) {
+        submenu.prop("hidden", true);
         return;
     }
 
-    // Anchored via getBoundingClientRect (not jQuery .offset()) and opened
-    // upward (CSS transform: translateY(-100%)) because this button lives in
-    // the bottom toolbar row — the first version lived inside SillyTavern's
-    // own wand menu, which closes itself on any item click before our click
-    // handler could read a stable position, so .offset() always saw a
-    // display:none ancestor and returned {top:0, left:0}. A dedicated,
-    // never-auto-closed button sidesteps that race entirely.
+    // position: fixed + raw getBoundingClientRect() (both viewport-relative,
+    // no window.scrollX/Y math) so there's nothing left to get wrong from a
+    // scrolled or transformed ancestor.
     const rect = anchorElement.getBoundingClientRect();
+    console.log("[Psychograph] Menu button rect:", rect);
     submenu.css({
-        top: rect.top + window.scrollY - 5,
-        left: rect.left + window.scrollX,
+        position: "fixed",
+        top: `${rect.top - 5}px`,
+        left: `${rect.left}px`,
     });
     submenu.prop("hidden", false);
 }
 
 function buildToolbarButton() {
+    if ($("#psychograph_menu_button").length > 0) {
+        return;
+    }
+
     const container = $("#nonQRFormItems");
     if (container.length === 0) {
         console.warn("[Psychograph] Toolbar container (#nonQRFormItems) not found, skipping menu button.");

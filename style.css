@@ -22,10 +22,14 @@
 
 #psychograph_menu_button {
     cursor: pointer;
+    font-size: 20px;
+    padding: 0 5px;
+    display: inline-flex;
+    align-items: center;
 }
 
 #psychograph_submenu {
-    position: absolute;
+    position: fixed;
     transform: translateY(-100%);
     z-index: 9999;
     min-width: 10em;
