@@ -333,12 +333,83 @@ function bindChatEvents() {
     eventSource.on(event_types.MESSAGE_SWIPED, handleChatMessageEvent(event_types.MESSAGE_SWIPED));
 }
 
+async function rerunClothingExtractionNow() {
+    const chat = getContext().chat;
+    const lastMessage = chat[chat.length - 1];
+    if (!lastMessage) {
+        toastr.warning("No messages in this chat yet.", "Psychograph");
+        return;
+    }
+
+    toastr.info("Analyzing clothing for the last message…", "Psychograph");
+    await runClothingExtraction(lastMessage.mes);
+}
+
+function togglePsychographWandSubmenu(anchorElement) {
+    const submenu = $("#psychograph_wand_submenu");
+    const wasHidden = submenu.prop("hidden");
+    submenu.prop("hidden", true);
+    if (!wasHidden) {
+        return;
+    }
+
+    const offset = $(anchorElement).offset();
+    submenu.css({
+        top: offset.top,
+        left: offset.left + $(anchorElement).outerWidth(),
+    });
+    submenu.prop("hidden", false);
+}
+
+function buildWandMenu() {
+    const wandMenu = $("#extensionsMenu");
+    if (wandMenu.length === 0) {
+        console.warn("[Psychograph] Wand menu (#extensionsMenu) not found, skipping menu button.");
+        return;
+    }
+
+    wandMenu.append(`
+        <div id="psychograph_wand_menu_item" class="list-group-item flex-container flexGap5" title="Psychograph">
+            <div class="fa-solid fa-brain extensionsMenuExtensionButton"></div>
+            <span>Psychograph</span>
+        </div>
+    `);
+
+    $("body").append(`
+        <div id="psychograph_wand_submenu" class="list-group" hidden>
+            <div id="psychograph_wand_action_clothes" class="list-group-item flex-container flexGap5">
+                <div class="fa-solid fa-shirt extensionsMenuExtensionButton"></div>
+                <span>Clothes</span>
+            </div>
+        </div>
+    `);
+
+    $("#psychograph_wand_menu_item").on("click", function (event) {
+        event.stopPropagation();
+        togglePsychographWandSubmenu(this);
+    });
+
+    $("#psychograph_wand_submenu").on("click", function (event) {
+        event.stopPropagation();
+    });
+
+    $(document).on("click", function () {
+        $("#psychograph_wand_submenu").prop("hidden", true);
+    });
+
+    $("#psychograph_wand_action_clothes").on("click", async function () {
+        $("#psychograph_wand_submenu").prop("hidden", true);
+        await rerunClothingExtractionNow();
+    });
+}
+
 jQuery(async () => {
     const settingsHtml = await $.get(`${extensionFolderPath}/settings.html`);
     $("#extensions_settings2").append(settingsHtml);
 
     bindSettingsEvents();
     bindChatEvents();
+    buildWandMenu();
     renderSettings();
     populateConnectionProfiles();
 });
