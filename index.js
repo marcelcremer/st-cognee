@@ -120,6 +120,7 @@ const defaultSettings = {
         baseUrl: "",
         apiKey: "",
         enabled: false,
+        recallEnabled: false,
     },
     state: {
         target: "char",
@@ -183,6 +184,7 @@ function renderSettings() {
     $("#psychograph_cognee_base_url").val(settings.cognee.baseUrl);
     $("#psychograph_cognee_api_key").val(settings.cognee.apiKey);
     $("#psychograph_cognee_enabled").prop("checked", settings.cognee.enabled);
+    $("#psychograph_cognee_recall_enabled").prop("checked", settings.cognee.recallEnabled);
     renderCogneeChatSection();
     $("#psychograph_state_target").val(settings.state.target);
 
@@ -220,6 +222,11 @@ function bindSettingsEvents() {
 
     $("#psychograph_cognee_enabled").on("change", function () {
         ensureSettings().cognee.enabled = $(this).prop("checked");
+        saveSettingsDebounced();
+    });
+
+    $("#psychograph_cognee_recall_enabled").on("change", function () {
+        ensureSettings().cognee.recallEnabled = $(this).prop("checked");
         saveSettingsDebounced();
     });
 
@@ -481,6 +488,79 @@ async function backfillChatHistoryToCognee() {
     }
 }
 
+// Wording tuned for a graph-completion query, not an extraction prompt, but
+// still empirically sensitive — see CLAUDE.md before changing this.
+function buildCogneeRecallQuery(userName, charName) {
+    return `This is an ongoing roleplay between ${userName} and ${charName}. Retrieve everything you know that is relevant for playing ${charName}'s next turn as realistically and consistently as possible — established relationships, unresolved plot threads, recent events, and ${charName}'s own goals, emotional state, and knowledge at this point in the story.`;
+}
+
+function buildCogneeRecallSystemPrompt(charName) {
+    return `You are supporting an ongoing roleplay. Answer only with concrete facts and reminders that keep ${charName}'s next turn realistic and in-character — established relationships, unresolved threads, recent events, ${charName}'s goals and emotional state. 2-4 short bullet points. Omit anything speculative or not actually grounded in what happened.`;
+}
+
+async function recallFromCognee(chatCogneeId) {
+    const settings = ensureSettings();
+    const context = getContext();
+
+    const response = await fetch(`${settings.cognee.baseUrl.replace(/\/$/, "")}/api/v1/recall`, {
+        method: "POST",
+        headers: { "X-Api-Key": settings.cognee.apiKey, "Content-Type": "application/json" },
+        body: JSON.stringify({
+            query: buildCogneeRecallQuery(context.name1, context.name2),
+            system_prompt: buildCogneeRecallSystemPrompt(context.name2),
+            datasets: [`psychograph-chat-${chatCogneeId}`],
+            scope: "graph",
+            search_type: "GRAPH_COMPLETION",
+        }),
+    });
+
+    if (!response.ok) {
+        throw new Error(`Cognee /recall failed: ${response.status} ${await response.text()}`);
+    }
+
+    const entries = await response.json();
+    return entries.map((entry) => entry.text ?? entry.answer ?? entry.context ?? "").filter(Boolean).join("\n");
+}
+
+const COGNEE_RECALL_INJECT_ID = "psychograph_cognee_recall";
+
+// Hooked on GENERATION_AFTER_COMMANDS (fires for Send/Swipe/Continue alike,
+// awaited by SillyTavern before prompt assembly) so this network round trip
+// still lands in the SAME upcoming turn rather than the next one. The actual
+// /inject below uses depth=0 (tail of the chat section, right before the
+// generation cursor) regardless of when in that window we call it — that's
+// the latest position the injection mechanism offers, which keeps the rest
+// of the prompt (system prompt, character card, world info, chat history)
+// byte-identical to the previous turn for backends that reuse a KV/prompt
+// cache across requests.
+async function handleCogneeRecall(type, _options, dryRun) {
+    const settings = ensureSettings();
+    if (dryRun || type === "quiet" || !settings.enabled || !settings.cognee.recallEnabled || !settings.cognee.baseUrl || !settings.cognee.apiKey) {
+        return;
+    }
+
+    try {
+        const chatCogneeId = getCogneeChatId();
+        const recalled = await recallFromCognee(chatCogneeId);
+        if (!recalled) {
+            return;
+        }
+
+        console.log("[Psychograph] Cognee recall for next turn:", recalled);
+        toastr.info(recalled, "Psychograph: Cognee recall", { timeOut: 8000 });
+
+        await getContext().executeSlashCommandsWithOptions(
+            `/inject id=${COGNEE_RECALL_INJECT_ID} position=chat ephemeral=true scan=true depth=0 role=system ${recalled} |`,
+        );
+    } catch (error) {
+        console.error("[Psychograph] Cognee recall failed:", error);
+    }
+}
+
+async function flushCogneeRecallInject() {
+    await getContext().executeSlashCommandsWithOptions(`/flushinject ${COGNEE_RECALL_INJECT_ID} |`);
+}
+
 function isClothingTriggerRelevant(eventType) {
     const target = ensureSettings().state.target;
     if (target === "char") {
@@ -518,6 +598,9 @@ function bindChatEvents() {
     eventSource.on(event_types.MESSAGE_RECEIVED, handleCogneeIngestion);
 
     eventSource.on(event_types.CHAT_CHANGED, renderCogneeChatSection);
+
+    eventSource.on(event_types.GENERATION_AFTER_COMMANDS, handleCogneeRecall);
+    eventSource.on(event_types.GENERATION_ENDED, flushCogneeRecallInject);
 }
 
 const GUIDED_INJECT_ID = "psychograph_guide";
