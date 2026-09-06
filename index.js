@@ -371,22 +371,27 @@ async function rerunClothingExtractionNow() {
 function togglePsychographSubmenu(anchorElement) {
     const submenu = $("#psychograph_submenu");
 
-    if (submenu.is(":visible")) {
-        submenu.prop("hidden", true);
+    if (submenu.hasClass("shown")) {
+        submenu.removeClass("shown");
         return;
     }
 
-    // position: fixed + raw getBoundingClientRect() (both viewport-relative,
-    // no window.scrollX/Y math) so there's nothing left to get wrong from a
-    // scrolled or transformed ancestor.
+    // position: absolute + getBoundingClientRect() + window.scrollX/Y, and
+    // toggled via our own "shown" class rather than the `hidden` attribute —
+    // this mirrors the GuidedGenerations extension's menu (confirmed working
+    // in the same SillyTavern instance), because relying on `hidden` turned
+    // out to be the actual bug: our container used SillyTavern's own
+    // `.list-group` class, which SillyTavern's core CSS apparently styles
+    // with a `display` that outranks the browser's default `[hidden]` rule
+    // (both are author-level rules of equal specificity, so `[hidden]`
+    // doesn't automatically win) — the submenu was never truly display:none,
+    // just sitting whereever it was last positioned (or its unset default).
     const rect = anchorElement.getBoundingClientRect();
-    console.log("[Psychograph] Menu button rect:", rect);
     submenu.css({
-        position: "fixed",
-        top: `${rect.top - 5}px`,
-        left: `${rect.left}px`,
+        top: `${rect.top + window.scrollY - 5}px`,
+        left: `${rect.left + window.scrollX}px`,
     });
-    submenu.prop("hidden", false);
+    submenu.addClass("shown");
 }
 
 function buildToolbarButton() {
@@ -405,8 +410,8 @@ function buildToolbarButton() {
     `);
 
     $("body").append(`
-        <div id="psychograph_submenu" class="list-group" hidden>
-            <div id="psychograph_action_clothes" class="list-group-item flex-container flexGap5">
+        <div id="psychograph_submenu" class="psychograph-tools-menu">
+            <div id="psychograph_action_clothes" class="list-group-item">
                 <div class="fa-solid fa-shirt extensionsMenuExtensionButton"></div>
                 <span>Clothes</span>
             </div>
@@ -423,11 +428,11 @@ function buildToolbarButton() {
     });
 
     $(document).on("click", function () {
-        $("#psychograph_submenu").prop("hidden", true);
+        $("#psychograph_submenu").removeClass("shown");
     });
 
     $("#psychograph_action_clothes").on("click", async function () {
-        $("#psychograph_submenu").prop("hidden", true);
+        $("#psychograph_submenu").removeClass("shown");
         await rerunClothingExtractionNow();
     });
 }

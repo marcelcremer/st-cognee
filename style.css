@@ -28,12 +28,28 @@
     align-items: center;
 }
 
-#psychograph_submenu {
-    position: fixed;
+.psychograph-tools-menu {
+    position: absolute;
     transform: translateY(-100%);
     z-index: 9999;
+    display: none;
     min-width: 10em;
     border-radius: 6px;
     overflow: hidden;
+    background-color: var(--SmartThemeBlurTintColor);
+    border: 1px solid var(--SmartThemeBorderColor, var(--SmartThemeBodyColor));
     box-shadow: 0 2px 8px rgba(0, 0, 0, 0.4);
+}
+
+.psychograph-tools-menu.shown {
+    display: block;
+}
+
+.psychograph-tools-menu .list-group-item {
+    display: flex;
+    align-items: center;
+    gap: 0.5em;
+    padding: 8px 12px;
+    cursor: pointer;
+    white-space: nowrap;
 }
