@@ -47,7 +47,10 @@ const CLOTHING_SLOT_UPDATE_SCHEMA = {
     additionalProperties: false,
 };
 
-const DEFAULT_CLOTHING_DIFF_PROMPT = `Analyze ONLY the message below (not prior context). For each clothing category,
+function buildDefaultClothingDiffPrompt(message) {
+    const exampleShape = JSON.stringify(Object.fromEntries(CLOTHING_SLOTS.map((slot) => [slot, false])));
+
+    return `Analyze ONLY the message below (not prior context). For each clothing category,
 determine whether the message contains explicit information about it — a
 description, addition, removal, or state/condition change (stain, tear,
 wetness, damage) to an existing item.
@@ -58,12 +61,13 @@ hair, or makeup is explicitly touched on. When in doubt, false.
 
 Message:
 """
-{{message}}
+${message}
 """
 
-Respond with ONLY a JSON object (no explanation, no markdown code fence)
-with exactly these boolean keys: top, bottom, underwear, legwear,
-footwear, accessories, hair, makeup.`;
+Respond with ONLY a JSON object (no explanation, no markdown code fence),
+using exactly this shape — all 8 keys present, true/false values only:
+${exampleShape}`;
+}
 
 function buildClothingSlotUpdatePrompt(slot, currentState, message) {
     return `Current state of ${slot}: "${currentState}"
@@ -259,8 +263,9 @@ async function runClothingExtraction(message) {
     }
 
     const clothesArea = settings.state.areas.clothes;
-    const diffPromptTemplate = clothesArea.useDefaultPrompt ? DEFAULT_CLOTHING_DIFF_PROMPT : clothesArea.customPrompt;
-    const diffPrompt = diffPromptTemplate.replaceAll("{{message}}", message);
+    const diffPrompt = clothesArea.useDefaultPrompt
+        ? buildDefaultClothingDiffPrompt(message)
+        : clothesArea.customPrompt.replaceAll("{{message}}", message);
 
     let diff;
     try {
