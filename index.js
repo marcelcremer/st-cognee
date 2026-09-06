@@ -183,6 +183,7 @@ function renderSettings() {
     $("#psychograph_cognee_base_url").val(settings.cognee.baseUrl);
     $("#psychograph_cognee_api_key").val(settings.cognee.apiKey);
     $("#psychograph_cognee_enabled").prop("checked", settings.cognee.enabled);
+    renderCogneeChatSection();
     $("#psychograph_state_target").val(settings.state.target);
 
     for (const { key, id } of STATE_AREAS) {
@@ -221,6 +222,31 @@ function bindSettingsEvents() {
         ensureSettings().cognee.enabled = $(this).prop("checked");
         saveSettingsDebounced();
     });
+
+    $("#psychograph_cognee_chat_id_set").on("click", function () {
+        const value = String($("#psychograph_cognee_chat_id_input").val()).trim();
+        if (!value) {
+            return;
+        }
+        writeCogneeChatId(value);
+        $("#psychograph_cognee_chat_id_input").val("");
+        renderCogneeChatSection();
+    });
+
+    $("#psychograph_cognee_chat_id_regenerate").on("click", async function () {
+        const context = getContext();
+        const confirmed = await context.callGenericPopup(
+            "Regenerate this chat's Cognee id? Future messages go to a new dataset; anything already sent stays under the old one.",
+            context.POPUP_TYPE.CONFIRM,
+        );
+        if (confirmed !== context.POPUP_RESULT.AFFIRMATIVE) {
+            return;
+        }
+        writeCogneeChatId(crypto.randomUUID());
+        renderCogneeChatSection();
+    });
+
+    $("#psychograph_cognee_backfill").on("click", backfillChatHistoryToCognee);
 
     $("#psychograph_state_target").on("change", function () {
         ensureSettings().state.target = String($(this).val());
@@ -340,20 +366,32 @@ const COGNEE_METADATA_KEY = "stPsychograph";
 // derived from the chat's filename/chatId, so it survives a chat rename —
 // this is the id that scopes a Cognee dataset/session to one specific
 // roleplay instance, since the same character can have many separate chats.
-function getCogneeChatId() {
-    const context = getContext();
-    const metadata = context.chatMetadata;
-    if (!metadata[COGNEE_METADATA_KEY]?.cogneeChatId) {
-        metadata[COGNEE_METADATA_KEY] = { ...metadata[COGNEE_METADATA_KEY], cogneeChatId: crypto.randomUUID() };
-        context.saveMetadataDebounced();
-    }
-    return metadata[COGNEE_METADATA_KEY].cogneeChatId;
+function readCogneeChatId() {
+    return getContext().chatMetadata[COGNEE_METADATA_KEY]?.cogneeChatId;
 }
 
-async function sendMessageToCognee(text, chatCogneeId) {
+function writeCogneeChatId(id) {
+    const context = getContext();
+    context.chatMetadata[COGNEE_METADATA_KEY] = { ...context.chatMetadata[COGNEE_METADATA_KEY], cogneeChatId: id };
+    context.saveMetadataDebounced();
+}
+
+function getCogneeChatId() {
+    return readCogneeChatId() ?? (writeCogneeChatId(crypto.randomUUID()), readCogneeChatId());
+}
+
+function renderCogneeChatSection() {
+    const id = readCogneeChatId();
+    $("#psychograph_cognee_chat_id").text(id || "not set yet");
+    $("#psychograph_cognee_chat_dataset").text(id ? `psychograph-chat-${id}` : "—");
+}
+
+async function sendMessageToCognee(texts, chatCogneeId) {
     const settings = ensureSettings();
     const formData = new FormData();
-    formData.append("raw_data", text);
+    for (const text of Array.isArray(texts) ? texts : [texts]) {
+        formData.append("raw_data", text);
+    }
     formData.append("datasetName", `psychograph-chat-${chatCogneeId}`);
     formData.append("session_id", chatCogneeId);
 
@@ -367,7 +405,7 @@ async function sendMessageToCognee(text, chatCogneeId) {
         throw new Error(`Cognee /remember failed: ${response.status} ${await response.text()}`);
     }
 
-    console.log("[Psychograph] Sent predecessor message to Cognee:", await response.json());
+    console.log("[Psychograph] Sent message(s) to Cognee:", await response.json());
 }
 
 const cogneeIngestedMessages = new WeakSet();
@@ -393,6 +431,53 @@ async function handleCogneeIngestion() {
         await sendMessageToCognee(`${speaker}: ${predecessor.mes}`, chatCogneeId);
     } catch (error) {
         console.error("[Psychograph] Cognee ingestion failed:", error);
+    }
+}
+
+const COGNEE_BACKFILL_BATCH_SIZE = 50;
+let cogneeBackfillRunning = false;
+
+async function backfillChatHistoryToCognee() {
+    if (cogneeBackfillRunning) {
+        return;
+    }
+
+    const settings = ensureSettings();
+    if (!settings.cognee.baseUrl || !settings.cognee.apiKey) {
+        toastr.warning("Configure the Cognee base URL and API key first.", "Psychograph");
+        return;
+    }
+
+    const context = getContext();
+    const messages = context.chat.filter((m) => m.mes && m.mes.trim());
+    if (messages.length === 0) {
+        toastr.info("No messages in this chat yet.", "Psychograph");
+        return;
+    }
+
+    const chatCogneeId = getCogneeChatId();
+    cogneeBackfillRunning = true;
+    $("#psychograph_cognee_backfill").addClass("disabled");
+
+    const totalBatches = Math.ceil(messages.length / COGNEE_BACKFILL_BATCH_SIZE);
+    try {
+        for (let i = 0; i < messages.length; i += COGNEE_BACKFILL_BATCH_SIZE) {
+            const batch = messages.slice(i, i + COGNEE_BACKFILL_BATCH_SIZE);
+            const texts = batch.map((m) => `${m.name || (m.is_user ? context.name1 : context.name2)}: ${m.mes}`);
+            await sendMessageToCognee(texts, chatCogneeId);
+            batch.forEach((m) => cogneeIngestedMessages.add(m));
+
+            const batchNumber = i / COGNEE_BACKFILL_BATCH_SIZE + 1;
+            $("#psychograph_cognee_backfill_status").text(`Sent batch ${batchNumber}/${totalBatches}...`);
+        }
+        toastr.success(`Sent ${messages.length} messages to Cognee.`, "Psychograph");
+    } catch (error) {
+        console.error("[Psychograph] Backfill failed:", error);
+        toastr.error("Backfill failed, see console for details.", "Psychograph");
+    } finally {
+        cogneeBackfillRunning = false;
+        $("#psychograph_cognee_backfill").removeClass("disabled");
+        $("#psychograph_cognee_backfill_status").text("");
     }
 }
 
@@ -431,6 +516,8 @@ function bindChatEvents() {
     // the same predecessor for no reason.
     eventSource.on(event_types.MESSAGE_SENT, handleCogneeIngestion);
     eventSource.on(event_types.MESSAGE_RECEIVED, handleCogneeIngestion);
+
+    eventSource.on(event_types.CHAT_CHANGED, renderCogneeChatSection);
 }
 
 const GUIDED_INJECT_ID = "psychograph_guide";
