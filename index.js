@@ -18,23 +18,6 @@ const CLOTHING_SLOTS = ["top", "bottom", "underwear", "legwear", "footwear", "ac
 const CLOTHING_DIFF_MAX_TOKENS = 250;
 const CLOTHING_SLOT_UPDATE_MAX_TOKENS = 200;
 
-// One-sentence functional/positional definitions for the prompt text —
-// deliberately NOT example-item lists ("stockings, tights, socks"). A small
-// model treats a parenthetical item list as close to exhaustive and starts
-// answering false for anything that isn't a literal match, the same
-// overfitting a few-shot JSON example caused earlier. Describing what a
-// slot IS (body location / function) generalizes instead of pattern-matching.
-const CLOTHING_SLOT_DEFINITIONS = {
-    top: "The main or layered garment covering the upper body and arms.",
-    bottom: "The main garment covering the lower body from the waist down (not hosiery worn underneath it).",
-    underwear: "Whatever is worn directly against the skin, underneath the outer clothing.",
-    legwear: "Hosiery worn on the legs, underneath or instead of the bottom garment itself.",
-    footwear: "Whatever is worn on the feet.",
-    accessories: "Anything worn or carried alongside clothing that isn't a garment covering the body.",
-    hair: "The hairstyle itself, not something worn.",
-    makeup: "Cosmetics applied to the face or skin.",
-};
-
 // "reasoning" is declared first (and listed first in `required`) so that on
 // backends doing real grammar-constrained decoding, the model is forced to
 // think through each category in prose BEFORE it has to commit to the
@@ -81,14 +64,10 @@ function buildDefaultClothingDiffPrompt(message) {
         reasoning: "...",
         ...Object.fromEntries(CLOTHING_SLOTS.map((slot) => [slot, false])),
     });
-    const slotLegend = CLOTHING_SLOTS.map((slot) => `- ${slot}: ${CLOTHING_SLOT_DEFINITIONS[slot]}`).join("\n");
 
     return `Analyze ONLY the message below (not prior context). For each clothing
 slot, determine whether the message contains any information about it.
 Slots represent where clothing is worn, not specifically a category.
-
-What each slot means:
-${slotLegend}
 
 If you find any change for a slot, mark it true. When there is no
 change about the slot, mark it false.
@@ -106,7 +85,7 @@ ${exampleShape}`;
 }
 
 function buildClothingSlotUpdatePrompt(slot, currentState, message) {
-    return `Clothing slot "${slot}": ${CLOTHING_SLOT_DEFINITIONS[slot]}
+    return `Clothing slot "${slot}" (where clothing is worn, not a category).
 
 Current state of ${slot}: "${currentState}"
 
