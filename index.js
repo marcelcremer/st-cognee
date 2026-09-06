@@ -68,6 +68,7 @@ function buildDefaultClothingDiffPrompt(message) {
     return `Analyze ONLY the message below (not prior context). For each clothing
 slot, determine whether the message contains any information about it.
 Slots represent where clothing is worn, not specifically a category.
+Important: Legwear covers the leg above the ankle, Footwear the foot.
 
 If you find any change for a slot, mark it true. When there is no
 change about the slot, mark it false.
