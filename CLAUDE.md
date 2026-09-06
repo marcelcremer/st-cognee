@@ -102,19 +102,22 @@ conversations that produced it.
 
 ## SillyTavern extension conventions
 
-No reference extension is vendored in this repo yet, so the following is
-orientation only — verify against SillyTavern's own extension docs once
-scaffolding work actually starts:
-
 - A `manifest.json` at the extension root declares metadata and the entry
   script.
-- `index.js` is the entry point; it typically registers UI via jQuery and
-  hooks into SillyTavern's event system (e.g. reacting to new messages).
-- Settings UI is usually a small HTML partial injected into SillyTavern's
+- `index.js` is the entry point; it registers UI via jQuery and hooks into
+  SillyTavern's event system (e.g. reacting to new messages).
+- Settings UI is a small HTML partial injected into SillyTavern's
   extensions settings panel, backed by a key in `extension_settings`.
 - For local development, an extension is loaded from
   `public/scripts/extensions/third-party/<extension-name>/` inside a
   SillyTavern checkout (or symlinked there).
+
+For anything beyond this basic shape (import paths, adding toolbar/menu UI,
+connection-profile access, schema-enforcement caveats, chat events), see
+[`docs/sillytavern-ui-notes.md`](docs/sillytavern-ui-notes.md) — verified
+findings from reading SillyTavern's own source, not orientation guesses.
+Update that file, don't re-derive from scratch, when something there turns
+out to be version-specific or wrong.
 
 ## Roadmap
 
