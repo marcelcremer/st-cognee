@@ -119,6 +119,7 @@ const defaultSettings = {
     cognee: {
         baseUrl: "",
         apiKey: "",
+        enabled: false,
     },
     state: {
         target: "char",
@@ -181,6 +182,7 @@ function renderSettings() {
     $("#psychograph_connection_profile").val(settings.connectionProfile);
     $("#psychograph_cognee_base_url").val(settings.cognee.baseUrl);
     $("#psychograph_cognee_api_key").val(settings.cognee.apiKey);
+    $("#psychograph_cognee_enabled").prop("checked", settings.cognee.enabled);
     $("#psychograph_state_target").val(settings.state.target);
 
     for (const { key, id } of STATE_AREAS) {
@@ -212,6 +214,11 @@ function bindSettingsEvents() {
 
     $("#psychograph_cognee_api_key").on("input", function () {
         ensureSettings().cognee.apiKey = String($(this).val());
+        saveSettingsDebounced();
+    });
+
+    $("#psychograph_cognee_enabled").on("change", function () {
+        ensureSettings().cognee.enabled = $(this).prop("checked");
         saveSettingsDebounced();
     });
 
@@ -327,6 +334,68 @@ async function runClothingExtraction(message) {
     saveSettingsDebounced();
 }
 
+const COGNEE_METADATA_KEY = "stPsychograph";
+
+// Stored in chat_metadata (saved inside the chat file itself) rather than
+// derived from the chat's filename/chatId, so it survives a chat rename —
+// this is the id that scopes a Cognee dataset/session to one specific
+// roleplay instance, since the same character can have many separate chats.
+function getCogneeChatId() {
+    const context = getContext();
+    const metadata = context.chatMetadata;
+    if (!metadata[COGNEE_METADATA_KEY]?.cogneeChatId) {
+        metadata[COGNEE_METADATA_KEY] = { ...metadata[COGNEE_METADATA_KEY], cogneeChatId: crypto.randomUUID() };
+        context.saveMetadataDebounced();
+    }
+    return metadata[COGNEE_METADATA_KEY].cogneeChatId;
+}
+
+async function sendMessageToCognee(text, chatCogneeId) {
+    const settings = ensureSettings();
+    const formData = new FormData();
+    formData.append("raw_data", text);
+    formData.append("datasetName", `psychograph-chat-${chatCogneeId}`);
+    formData.append("session_id", chatCogneeId);
+
+    const response = await fetch(`${settings.cognee.baseUrl.replace(/\/$/, "")}/api/v1/remember`, {
+        method: "POST",
+        headers: { "X-Api-Key": settings.cognee.apiKey },
+        body: formData,
+    });
+
+    if (!response.ok) {
+        throw new Error(`Cognee /remember failed: ${response.status} ${await response.text()}`);
+    }
+
+    console.log("[Psychograph] Sent predecessor message to Cognee:", await response.json());
+}
+
+const cogneeIngestedMessages = new WeakSet();
+
+async function handleCogneeIngestion() {
+    const settings = ensureSettings();
+    if (!settings.enabled || !settings.cognee.enabled || !settings.cognee.baseUrl || !settings.cognee.apiKey) {
+        return;
+    }
+
+    const context = getContext();
+    const chat = context.chat;
+    const predecessor = chat[chat.length - 2];
+    if (!predecessor || cogneeIngestedMessages.has(predecessor)) {
+        return;
+    }
+    cogneeIngestedMessages.add(predecessor);
+
+    const speaker = predecessor.name || (predecessor.is_user ? context.name1 : context.name2);
+    const chatCogneeId = getCogneeChatId();
+
+    try {
+        await sendMessageToCognee(`${speaker}: ${predecessor.mes}`, chatCogneeId);
+    } catch (error) {
+        console.error("[Psychograph] Cognee ingestion failed:", error);
+    }
+}
+
 function isClothingTriggerRelevant(eventType) {
     const target = ensureSettings().state.target;
     if (target === "char") {
@@ -356,6 +425,12 @@ function bindChatEvents() {
     eventSource.on(event_types.MESSAGE_SENT, handleChatMessageEvent(event_types.MESSAGE_SENT));
     eventSource.on(event_types.MESSAGE_RECEIVED, handleChatMessageEvent(event_types.MESSAGE_RECEIVED));
     eventSource.on(event_types.MESSAGE_SWIPED, handleChatMessageEvent(event_types.MESSAGE_SWIPED));
+
+    // Not bound on MESSAGE_SWIPED: swiping only changes the active swipe of
+    // the *last* message, never its predecessor, so it would just resend
+    // the same predecessor for no reason.
+    eventSource.on(event_types.MESSAGE_SENT, handleCogneeIngestion);
+    eventSource.on(event_types.MESSAGE_RECEIVED, handleCogneeIngestion);
 }
 
 const GUIDED_INJECT_ID = "psychograph_guide";
