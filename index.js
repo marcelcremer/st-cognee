@@ -18,6 +18,23 @@ const CLOTHING_SLOTS = ["top", "bottom", "underwear", "legwear", "footwear", "ac
 const CLOTHING_DIFF_MAX_TOKENS = 250;
 const CLOTHING_SLOT_UPDATE_MAX_TOKENS = 200;
 
+// Short, example-based hints for the prompt text (distinct from the more
+// formal boolean-predicate wording in CLOTHING_DIFF_SCHEMA's `description`
+// fields, which only reach the model when response_format/json_schema is
+// actually honored). Slot names alone aren't self-explanatory enough for a
+// small model — "legwear" vs "footwear" got confused until the location
+// ("worn on the legs" / "worn on the feet") was spelled out explicitly.
+const CLOTHING_SLOT_HINTS = {
+    top: "shirts, jackets, coats",
+    bottom: "pants, skirts, shorts",
+    underwear: "bra, panties, boxers",
+    legwear: "stockings, tights, socks — worn on the legs",
+    footwear: "shoes, boots, heels — worn on the feet",
+    accessories: "jewelry, glasses, hats, belts",
+    hair: "hairstyle",
+    makeup: "makeup",
+};
+
 // "reasoning" is declared first (and listed first in `required`) so that on
 // backends doing real grammar-constrained decoding, the model is forced to
 // think through each category in prose BEFORE it has to commit to the
@@ -64,10 +81,13 @@ function buildDefaultClothingDiffPrompt(message) {
         reasoning: "...",
         ...Object.fromEntries(CLOTHING_SLOTS.map((slot) => [slot, false])),
     });
+    const slotLegend = CLOTHING_SLOTS.map((slot) => `${slot} (${CLOTHING_SLOT_HINTS[slot]})`).join(", ");
 
     return `Analyze ONLY the message below (not prior context). For each clothing
 slot, determine whether the message contains any information about it.
 Slots represent where clothing is worn, not specifically a category.
+
+Slots: ${slotLegend}.
 
 If you find any change for a slot, mark it true. When there is no
 change about the slot, mark it false.
@@ -85,7 +105,7 @@ ${exampleShape}`;
 }
 
 function buildClothingSlotUpdatePrompt(slot, currentState, message) {
-    return `Clothing slot "${slot}" (where clothing is worn, not a category).
+    return `Clothing slot "${slot}" (${CLOTHING_SLOT_HINTS[slot]}).
 
 Current state of ${slot}: "${currentState}"
 
