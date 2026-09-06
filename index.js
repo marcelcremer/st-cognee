@@ -1,6 +1,6 @@
 import { extension_settings, getContext } from "../../../extensions.js";
 import { saveSettingsDebounced } from "../../../../script.js";
-import { eventSource, event_types } from "../../../../events.js";
+import { eventSource, event_types } from "../../../events.js";
 import { ConnectionManagerRequestService } from "../../shared.js";
 
 const extensionName = "st-psychograph";
