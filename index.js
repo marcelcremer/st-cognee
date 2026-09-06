@@ -104,6 +104,8 @@ Update the ${slot} state based on this message.
 - If nothing actually changed despite the trigger, return the state unchanged.
 - Do not invent details that were not stated in the message.
 
+Hint: There are multiple slots - you only have to concentrate on ${slot} though. Legwear covers the leg above the ankle, Footwear the foot. An accessory typically refers to an item worn to complement or enhance a garment or appearance.
+
 Reasoning is just for debug, so one concise sentence is enough.
 
 Respond with ONLY a JSON object (no markdown code fence). Fill in
