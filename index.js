@@ -1,9 +1,11 @@
-import { extension_settings } from "../../../extensions.js";
+import { extension_settings, getContext } from "../../../extensions.js";
 import { saveSettingsDebounced } from "../../../../script.js";
 import { eventSource, event_types } from "../../../../events.js";
+import { ConnectionManagerRequestService } from "../../shared.js";
 
 const extensionName = "st-psychograph";
 const extensionFolderPath = `scripts/extensions/third-party/${extensionName}`;
+const SUMMARY_TEST_MAX_TOKENS = 300;
 
 const STATE_AREAS = [
     { key: "general", id: "general" },
@@ -128,11 +130,50 @@ function bindSettingsEvents() {
     eventSource.on(event_types.CONNECTION_PROFILE_DELETED, populateConnectionProfiles);
 }
 
+async function testSummarizePreviousMessage() {
+    const settings = ensureSettings();
+    if (!settings.enabled) {
+        return;
+    }
+
+    if (!settings.connectionProfile) {
+        console.warn("[Psychograph] Summary test: no connection profile configured, skipping.");
+        return;
+    }
+
+    const chat = getContext().chat;
+    if (chat.length < 2) {
+        return;
+    }
+
+    const previousMessage = chat[chat.length - 2];
+    const prompt = `Send a summary of this message: ${previousMessage.mes}`;
+
+    console.log("[Psychograph] Summary test — summarizing previous message:", previousMessage.mes);
+
+    try {
+        const response = await ConnectionManagerRequestService.sendRequest(
+            settings.connectionProfile,
+            prompt,
+            SUMMARY_TEST_MAX_TOKENS,
+        );
+        console.log("[Psychograph] Summary test — response:", response?.content ?? response);
+    } catch (error) {
+        console.error("[Psychograph] Summary test — request failed:", error);
+    }
+}
+
+function bindChatEvents() {
+    eventSource.on(event_types.MESSAGE_SENT, testSummarizePreviousMessage);
+    eventSource.on(event_types.MESSAGE_RECEIVED, testSummarizePreviousMessage);
+}
+
 jQuery(async () => {
     const settingsHtml = await $.get(`${extensionFolderPath}/settings.html`);
     $("#extensions_settings2").append(settingsHtml);
 
     bindSettingsEvents();
+    bindChatEvents();
     renderSettings();
     populateConnectionProfiles();
 });
