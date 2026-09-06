@@ -495,7 +495,7 @@ function buildCogneeRecallQuery(userName, charName) {
 }
 
 function buildCogneeRecallSystemPrompt(charName) {
-    return `You are supporting an ongoing roleplay. Answer only with concrete facts and reminders that keep ${charName}'s next turn realistic and in-character — established relationships, unresolved threads, recent events, ${charName}'s goals and emotional state. 2-4 short bullet points. Omit anything speculative or not actually grounded in what happened.`;
+    return `You are supporting an ongoing roleplay. Answer only with concrete facts and reminders that keep ${charName}'s next turn realistic and in-character — established relationships, unresolved threads, recent events, ${charName}'s goals and emotional state. Do not restate anything ${charName} would already obviously know or that's already common ground in the story — only surface what's actually useful to be reminded of. 2-4 short bullet points. Omit anything speculative or not actually grounded in what happened.`;
 }
 
 async function recallFromCognee(chatCogneeId) {
@@ -523,6 +523,7 @@ async function recallFromCognee(chatCogneeId) {
 }
 
 const COGNEE_RECALL_INJECT_ID = "psychograph_cognee_recall";
+const COGNEE_RECALL_HEADING = "### Long-term context";
 
 // Hooked on GENERATION_AFTER_COMMANDS (fires for Send/Swipe/Continue alike,
 // awaited by SillyTavern before prompt assembly) so this network round trip
@@ -546,11 +547,12 @@ async function handleCogneeRecall(type, _options, dryRun) {
             return;
         }
 
-        console.log("[Psychograph] Cognee recall for next turn:", recalled);
-        toastr.info(recalled, "Psychograph: Cognee recall", { timeOut: 8000 });
+        const injectedText = `${COGNEE_RECALL_HEADING}\n${recalled}`;
+        console.log("[Psychograph] Cognee recall for next turn:", injectedText);
+        toastr.info(injectedText, "Psychograph: Cognee recall", { timeOut: 8000 });
 
         await getContext().executeSlashCommandsWithOptions(
-            `/inject id=${COGNEE_RECALL_INJECT_ID} position=chat ephemeral=true scan=true depth=0 role=system ${recalled} |`,
+            `/inject id=${COGNEE_RECALL_INJECT_ID} position=chat ephemeral=true scan=true depth=0 role=system ${injectedText} |`,
         );
     } catch (error) {
         console.error("[Psychograph] Cognee recall failed:", error);
