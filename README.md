@@ -27,6 +27,8 @@ Nothing here is installable yet.
 
 - [`docs/memory-system.md`](docs/memory-system.md) — architecture and design
   rationale for the three memory layers.
+- [`docs/ui.md`](docs/ui.md) — settings panel layout and chat toolbar
+  additions (buttons, submenu, what each control does).
 - [`docs/reference/cognee-openapi.json`](docs/reference/cognee-openapi.json)
   — raw OpenAPI spec for the Cognee backend used by the Lore/Graph layer.
 - [`CLAUDE.md`](CLAUDE.md) — guidance for agents/contributors working in this
