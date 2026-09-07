@@ -119,6 +119,8 @@ const defaultSettings = {
     cognee: {
         baseUrl: "",
         apiKey: "",
+        enabled: false,
+        recallEnabled: false,
     },
     state: {
         target: "char",
@@ -181,6 +183,9 @@ function renderSettings() {
     $("#psychograph_connection_profile").val(settings.connectionProfile);
     $("#psychograph_cognee_base_url").val(settings.cognee.baseUrl);
     $("#psychograph_cognee_api_key").val(settings.cognee.apiKey);
+    $("#psychograph_cognee_enabled").prop("checked", settings.cognee.enabled);
+    $("#psychograph_cognee_recall_enabled").prop("checked", settings.cognee.recallEnabled);
+    renderCogneeChatSection();
     $("#psychograph_state_target").val(settings.state.target);
 
     for (const { key, id } of STATE_AREAS) {
@@ -214,6 +219,41 @@ function bindSettingsEvents() {
         ensureSettings().cognee.apiKey = String($(this).val());
         saveSettingsDebounced();
     });
+
+    $("#psychograph_cognee_enabled").on("change", function () {
+        ensureSettings().cognee.enabled = $(this).prop("checked");
+        saveSettingsDebounced();
+    });
+
+    $("#psychograph_cognee_recall_enabled").on("change", function () {
+        ensureSettings().cognee.recallEnabled = $(this).prop("checked");
+        saveSettingsDebounced();
+    });
+
+    $("#psychograph_cognee_chat_id_set").on("click", function () {
+        const value = String($("#psychograph_cognee_chat_id_input").val()).trim();
+        if (!value) {
+            return;
+        }
+        writeCogneeChatId(value);
+        $("#psychograph_cognee_chat_id_input").val("");
+        renderCogneeChatSection();
+    });
+
+    $("#psychograph_cognee_chat_id_regenerate").on("click", async function () {
+        const context = getContext();
+        const confirmed = await context.callGenericPopup(
+            "Regenerate this chat's Cognee id? Future messages go to a new dataset; anything already sent stays under the old one.",
+            context.POPUP_TYPE.CONFIRM,
+        );
+        if (confirmed !== context.POPUP_RESULT.AFFIRMATIVE) {
+            return;
+        }
+        writeCogneeChatId(crypto.randomUUID());
+        renderCogneeChatSection();
+    });
+
+    $("#psychograph_cognee_backfill").on("click", backfillChatHistoryToCognee);
 
     $("#psychograph_state_target").on("change", function () {
         ensureSettings().state.target = String($(this).val());
@@ -327,6 +367,238 @@ async function runClothingExtraction(message) {
     saveSettingsDebounced();
 }
 
+const COGNEE_METADATA_KEY = "stPsychograph";
+
+// Stored in chat_metadata (saved inside the chat file itself) rather than
+// derived from the chat's filename/chatId, so it survives a chat rename —
+// this is the id that scopes a Cognee dataset/session to one specific
+// roleplay instance, since the same character can have many separate chats.
+function readCogneeChatId() {
+    return getContext().chatMetadata[COGNEE_METADATA_KEY]?.cogneeChatId;
+}
+
+function writeCogneeChatId(id) {
+    const context = getContext();
+    context.chatMetadata[COGNEE_METADATA_KEY] = { ...context.chatMetadata[COGNEE_METADATA_KEY], cogneeChatId: id };
+    context.saveMetadataDebounced();
+}
+
+function getCogneeChatId() {
+    return readCogneeChatId() ?? (writeCogneeChatId(crypto.randomUUID()), readCogneeChatId());
+}
+
+function renderCogneeChatSection() {
+    const id = readCogneeChatId();
+    $("#psychograph_cognee_chat_id").text(id || "not set yet");
+    $("#psychograph_cognee_chat_dataset").text(id ? `psychograph-chat-${id}` : "—");
+}
+
+// Explicit and small rather than trusting Cognee's default (4096): a dense
+// chunk of packed RP dialogue can contain enough entities that a small local
+// model's extraction response gets truncated before valid JSON closes (seen
+// in practice as "finish_reason=length" + a schema-validation failure).
+const COGNEE_CHUNK_SIZE = 1024;
+
+async function sendMessageToCognee(texts, chatCogneeId) {
+    const settings = ensureSettings();
+    const formData = new FormData();
+    for (const text of Array.isArray(texts) ? texts : [texts]) {
+        formData.append("raw_data", text);
+    }
+    formData.append("datasetName", `psychograph-chat-${chatCogneeId}`);
+    formData.append("session_id", chatCogneeId);
+    formData.append("chunk_size", String(COGNEE_CHUNK_SIZE));
+
+    const response = await fetch(`${settings.cognee.baseUrl.replace(/\/$/, "")}/api/v1/remember`, {
+        method: "POST",
+        headers: { "X-Api-Key": settings.cognee.apiKey },
+        body: formData,
+    });
+
+    if (!response.ok) {
+        throw new Error(`Cognee /remember failed: ${response.status} ${await response.text()}`);
+    }
+
+    console.log("[Psychograph] Sent message(s) to Cognee:", await response.json());
+}
+
+const cogneeIngestedMessages = new WeakSet();
+
+async function handleCogneeIngestion() {
+    const settings = ensureSettings();
+    if (!settings.enabled || !settings.cognee.enabled || !settings.cognee.baseUrl || !settings.cognee.apiKey) {
+        return;
+    }
+
+    const context = getContext();
+    const chat = context.chat;
+    const predecessor = chat[chat.length - 2];
+    if (!predecessor || cogneeIngestedMessages.has(predecessor)) {
+        return;
+    }
+    cogneeIngestedMessages.add(predecessor);
+
+    const speaker = predecessor.name || (predecessor.is_user ? context.name1 : context.name2);
+    const chatCogneeId = getCogneeChatId();
+
+    try {
+        await sendMessageToCognee(`${speaker}: ${predecessor.mes}`, chatCogneeId);
+    } catch (error) {
+        console.error("[Psychograph] Cognee ingestion failed:", error);
+    }
+}
+
+let cogneeBackfillRunning = false;
+
+// Reuses sendMessageToCognee() (the same /remember+session_id call the live
+// predecessor hook makes) one message at a time, rather than bundling many
+// messages into one call: each call's chunk is then bounded by a single
+// message's length, which is naturally small — avoiding the truncation
+// issue by construction instead of by tuning a batch/chunk size to guess
+// around it. Also means backfill and live ingestion are one code path.
+async function backfillChatHistoryToCognee() {
+    if (cogneeBackfillRunning) {
+        return;
+    }
+
+    const settings = ensureSettings();
+    if (!settings.cognee.baseUrl || !settings.cognee.apiKey) {
+        toastr.warning("Configure the Cognee base URL and API key first.", "Psychograph");
+        return;
+    }
+
+    const context = getContext();
+    const messages = context.chat.filter((m) => m.mes && m.mes.trim());
+    if (messages.length === 0) {
+        toastr.info("No messages in this chat yet.", "Psychograph");
+        return;
+    }
+
+    const chatCogneeId = getCogneeChatId();
+    cogneeBackfillRunning = true;
+    $("#psychograph_cognee_backfill").addClass("disabled");
+
+    try {
+        for (let i = 0; i < messages.length; i++) {
+            const message = messages[i];
+            const speaker = message.name || (message.is_user ? context.name1 : context.name2);
+            await sendMessageToCognee(`${speaker}: ${message.mes}`, chatCogneeId);
+            cogneeIngestedMessages.add(message);
+
+            $("#psychograph_cognee_backfill_status").text(`Sent ${i + 1}/${messages.length}...`);
+        }
+        toastr.success(`Sent ${messages.length} messages to Cognee.`, "Psychograph");
+    } catch (error) {
+        console.error("[Psychograph] Backfill failed:", error);
+        toastr.error("Backfill failed, see console for details.", "Psychograph");
+    } finally {
+        cogneeBackfillRunning = false;
+        $("#psychograph_cognee_backfill").removeClass("disabled");
+        $("#psychograph_cognee_backfill_status").text("");
+    }
+}
+
+// Wording tuned for a graph-completion query, not an extraction prompt, but
+// still empirically sensitive — see CLAUDE.md before changing this.
+function buildCogneeRecallQuery(userName, charName) {
+    return `This is an ongoing roleplay between ${userName} and ${charName}. Retrieve everything you know that is relevant for playing ${charName}'s next turn as realistically and consistently as possible — established relationships, unresolved plot threads, recent events, and ${charName}'s own goals, emotional state, and knowledge at this point in the story.`;
+}
+
+function buildCogneeRecallSystemPrompt(charName) {
+    return `You are supporting an ongoing roleplay. Answer only with concrete facts and reminders that keep ${charName}'s next turn realistic and in-character — established relationships, unresolved threads, recent events, ${charName}'s goals and emotional state. Do not restate anything ${charName} would already obviously know or that's already common ground in the story — only surface what's actually useful to be reminded of. 2-4 short bullet points. Omit anything speculative or not actually grounded in what happened.`;
+}
+
+async function recallFromCognee(chatCogneeId) {
+    const settings = ensureSettings();
+    const context = getContext();
+
+    const response = await fetch(`${settings.cognee.baseUrl.replace(/\/$/, "")}/api/v1/recall`, {
+        method: "POST",
+        headers: { "X-Api-Key": settings.cognee.apiKey, "Content-Type": "application/json" },
+        body: JSON.stringify({
+            query: buildCogneeRecallQuery(context.name1, context.name2),
+            system_prompt: buildCogneeRecallSystemPrompt(context.name2),
+            datasets: [`psychograph-chat-${chatCogneeId}`],
+            scope: "graph",
+            search_type: "GRAPH_COMPLETION",
+        }),
+    });
+
+    if (!response.ok) {
+        throw new Error(`Cognee /recall failed: ${response.status} ${await response.text()}`);
+    }
+
+    const entries = await response.json();
+    return entries.map((entry) => entry.text ?? entry.answer ?? entry.context ?? "").filter(Boolean).join("\n");
+}
+
+const COGNEE_RECALL_INJECT_ID = "psychograph_cognee_recall";
+const COGNEE_RECALL_HEADING = "### Long-term context";
+
+// Hooked on GENERATION_AFTER_COMMANDS (fires for Send/Swipe/Continue alike,
+// awaited by SillyTavern before prompt assembly) so this network round trip
+// still lands in the SAME upcoming turn rather than the next one. The actual
+// /inject below uses depth=0 (tail of the chat section, right before the
+// generation cursor) regardless of when in that window we call it — that's
+// the latest position the injection mechanism offers, which keeps the rest
+// of the prompt (system prompt, character card, world info, chat history)
+// byte-identical to the previous turn for backends that reuse a KV/prompt
+// cache across requests.
+let cogneeRecallInFlight = false;
+
+async function handleCogneeRecall(type, _options, dryRun) {
+    const settings = ensureSettings();
+    if (dryRun || type === "quiet" || !settings.enabled || !settings.cognee.recallEnabled || !settings.cognee.baseUrl || !settings.cognee.apiKey) {
+        return;
+    }
+    if (cogneeRecallInFlight) {
+        console.warn("[Psychograph] Cognee recall already in progress, skipping this trigger.");
+        return;
+    }
+    cogneeRecallInFlight = true;
+
+    // Shows the native Send->Stop button state immediately: the real
+    // generation flow doesn't do this itself until much later (once the
+    // prompt is built and the actual LLM request starts), so without this
+    // the UI looks idle for the whole recall round trip and invites a
+    // second Enter press (which SillyTavern's own is_send_press guard does
+    // not block during this window, since it isn't set until deep inside
+    // Generate() - only the Send button's own click handler is separately
+    // mutex-protected). Disabling the textarea closes that Enter-key gap
+    // directly: a disabled textarea can't receive keyboard focus/events at
+    // all, so it doesn't depend on SillyTavern's internal is_send_press
+    // flag (which isn't exposed to extensions anyway).
+    const context = getContext();
+    context.deactivateSendButtons();
+    $("#send_textarea").prop("disabled", true);
+
+    try {
+        const chatCogneeId = getCogneeChatId();
+        const recalled = await recallFromCognee(chatCogneeId);
+        if (!recalled) {
+            return;
+        }
+
+        const injectedText = `${COGNEE_RECALL_HEADING}\n${recalled}`;
+        console.log("[Psychograph] Cognee recall for next turn:", injectedText);
+        toastr.info(injectedText, "Psychograph: Cognee recall", { timeOut: 8000 });
+
+        await context.executeSlashCommandsWithOptions(
+            `/inject id=${COGNEE_RECALL_INJECT_ID} position=chat ephemeral=true scan=true depth=0 role=system ${injectedText} |`,
+        );
+    } catch (error) {
+        console.error("[Psychograph] Cognee recall failed:", error);
+    } finally {
+        cogneeRecallInFlight = false;
+        context.activateSendButtons();
+        $("#send_textarea").prop("disabled", false);
+    }
+}
+
+async function flushCogneeRecallInject() {
+    await getContext().executeSlashCommandsWithOptions(`/flushinject ${COGNEE_RECALL_INJECT_ID} |`);
+}
+
 function isClothingTriggerRelevant(eventType) {
     const target = ensureSettings().state.target;
     if (target === "char") {
@@ -356,6 +628,17 @@ function bindChatEvents() {
     eventSource.on(event_types.MESSAGE_SENT, handleChatMessageEvent(event_types.MESSAGE_SENT));
     eventSource.on(event_types.MESSAGE_RECEIVED, handleChatMessageEvent(event_types.MESSAGE_RECEIVED));
     eventSource.on(event_types.MESSAGE_SWIPED, handleChatMessageEvent(event_types.MESSAGE_SWIPED));
+
+    // Not bound on MESSAGE_SWIPED: swiping only changes the active swipe of
+    // the *last* message, never its predecessor, so it would just resend
+    // the same predecessor for no reason.
+    eventSource.on(event_types.MESSAGE_SENT, handleCogneeIngestion);
+    eventSource.on(event_types.MESSAGE_RECEIVED, handleCogneeIngestion);
+
+    eventSource.on(event_types.CHAT_CHANGED, renderCogneeChatSection);
+
+    eventSource.on(event_types.GENERATION_AFTER_COMMANDS, handleCogneeRecall);
+    eventSource.on(event_types.GENERATION_ENDED, flushCogneeRecallInject);
 }
 
 const GUIDED_INJECT_ID = "psychograph_guide";

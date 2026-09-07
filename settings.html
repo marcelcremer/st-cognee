@@ -165,6 +165,30 @@
                             <input id="psychograph_cognee_base_url" type="text" class="text_pole" placeholder="https://your-cognee-instance.example.com" />
                             <label for="psychograph_cognee_api_key">API Key</label>
                             <input id="psychograph_cognee_api_key" type="password" class="text_pole" placeholder="Cognee API key" />
+
+                            <label class="checkbox_label" for="psychograph_cognee_enabled">
+                                <input id="psychograph_cognee_enabled" type="checkbox" />
+                                Send predecessor messages to Cognee (experimental test)
+                            </label>
+
+                            <label class="checkbox_label" for="psychograph_cognee_recall_enabled">
+                                <input id="psychograph_cognee_recall_enabled" type="checkbox" />
+                                Query Cognee for context before each generation (experimental test)
+                            </label>
+
+                            <hr>
+                            <div id="psychograph_cognee_chat_section">
+                                <label>Current chat</label>
+                                <div><span>Id:</span> <code id="psychograph_cognee_chat_id">&mdash;</code></div>
+                                <div><span>Dataset:</span> <code id="psychograph_cognee_chat_dataset">&mdash;</code></div>
+                                <div class="flex-container">
+                                    <input id="psychograph_cognee_chat_id_input" type="text" class="text_pole" placeholder="Paste an id to reuse it for this chat" />
+                                    <div id="psychograph_cognee_chat_id_set" class="menu_button">Set</div>
+                                    <div id="psychograph_cognee_chat_id_regenerate" class="menu_button">Regenerate</div>
+                                </div>
+                                <div id="psychograph_cognee_backfill" class="menu_button">Send full chat history to Cognee</div>
+                                <small id="psychograph_cognee_backfill_status"></small>
+                            </div>
                         </div>
                     </div>
                 </div>
