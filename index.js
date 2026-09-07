@@ -393,6 +393,12 @@ function renderCogneeChatSection() {
     $("#psychograph_cognee_chat_dataset").text(id ? `psychograph-chat-${id}` : "—");
 }
 
+// Explicit and small rather than trusting Cognee's default (4096): a dense
+// chunk of packed RP dialogue can contain enough entities that a small local
+// model's extraction response gets truncated before valid JSON closes (seen
+// in practice as "finish_reason=length" + a schema-validation failure).
+const COGNEE_CHUNK_SIZE = 1024;
+
 async function sendMessageToCognee(texts, chatCogneeId) {
     const settings = ensureSettings();
     const formData = new FormData();
@@ -401,6 +407,7 @@ async function sendMessageToCognee(texts, chatCogneeId) {
     }
     formData.append("datasetName", `psychograph-chat-${chatCogneeId}`);
     formData.append("session_id", chatCogneeId);
+    formData.append("chunk_size", String(COGNEE_CHUNK_SIZE));
 
     const response = await fetch(`${settings.cognee.baseUrl.replace(/\/$/, "")}/api/v1/remember`, {
         method: "POST",
@@ -441,8 +448,88 @@ async function handleCogneeIngestion() {
     }
 }
 
-const COGNEE_BACKFILL_BATCH_SIZE = 50;
 let cogneeBackfillRunning = false;
+
+function sleep(ms) {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function addChatHistoryToCognee(document, chatCogneeId, context) {
+    const settings = ensureSettings();
+    const formData = new FormData();
+    formData.append("raw_data", document);
+    formData.append("datasetName", `psychograph-chat-${chatCogneeId}`);
+    formData.append("labels", JSON.stringify(["chatlog"]));
+    formData.append("external_metadata", JSON.stringify([{
+        source: "chat history backfill",
+        participants: [context.name1, context.name2],
+    }]));
+    formData.append("node_set", context.name2);
+
+    const response = await fetch(`${settings.cognee.baseUrl.replace(/\/$/, "")}/api/v1/add`, {
+        method: "POST",
+        headers: { "X-Api-Key": settings.cognee.apiKey },
+        body: formData,
+    });
+
+    if (!response.ok) {
+        throw new Error(`Cognee /add failed: ${response.status} ${await response.text()}`);
+    }
+
+    return response.json();
+}
+
+async function cognifyChatHistory(chatCogneeId) {
+    const settings = ensureSettings();
+    const response = await fetch(`${settings.cognee.baseUrl.replace(/\/$/, "")}/api/v1/cognify`, {
+        method: "POST",
+        headers: { "X-Api-Key": settings.cognee.apiKey, "Content-Type": "application/json" },
+        body: JSON.stringify({
+            datasets: [`psychograph-chat-${chatCogneeId}`],
+            runInBackground: true,
+            chunkSize: COGNEE_CHUNK_SIZE,
+        }),
+    });
+
+    if (!response.ok) {
+        throw new Error(`Cognee /cognify failed: ${response.status} ${await response.text()}`);
+    }
+
+    return response.json();
+}
+
+const COGNEE_BACKFILL_POLL_INTERVAL_MS = 10000;
+const COGNEE_BACKFILL_POLL_TIMEOUT_MS = 30 * 60 * 1000;
+
+async function waitForCognifyCompletion(datasetId) {
+    const settings = ensureSettings();
+    const deadline = Date.now() + COGNEE_BACKFILL_POLL_TIMEOUT_MS;
+
+    while (Date.now() < deadline) {
+        const response = await fetch(
+            `${settings.cognee.baseUrl.replace(/\/$/, "")}/api/v1/datasets/status?dataset=${encodeURIComponent(datasetId)}`,
+            { headers: { "X-Api-Key": settings.cognee.apiKey } },
+        );
+        if (!response.ok) {
+            throw new Error(`Cognee /datasets/status failed: ${response.status} ${await response.text()}`);
+        }
+
+        const statuses = await response.json();
+        const status = statuses[datasetId];
+        $("#psychograph_cognee_backfill_status").text(`Cognify status: ${status}...`);
+
+        if (String(status).toLowerCase() === "completed") {
+            return true;
+        }
+        if (String(status).toLowerCase() === "failed") {
+            return false;
+        }
+
+        await sleep(COGNEE_BACKFILL_POLL_INTERVAL_MS);
+    }
+
+    return null; // timed out
+}
 
 async function backfillChatHistoryToCognee() {
     if (cogneeBackfillRunning) {
@@ -466,18 +553,26 @@ async function backfillChatHistoryToCognee() {
     cogneeBackfillRunning = true;
     $("#psychograph_cognee_backfill").addClass("disabled");
 
-    const totalBatches = Math.ceil(messages.length / COGNEE_BACKFILL_BATCH_SIZE);
     try {
-        for (let i = 0; i < messages.length; i += COGNEE_BACKFILL_BATCH_SIZE) {
-            const batch = messages.slice(i, i + COGNEE_BACKFILL_BATCH_SIZE);
-            const texts = batch.map((m) => `${m.name || (m.is_user ? context.name1 : context.name2)}: ${m.mes}`);
-            await sendMessageToCognee(texts, chatCogneeId);
-            batch.forEach((m) => cogneeIngestedMessages.add(m));
+        const document = messages
+            .map((m) => `${m.name || (m.is_user ? context.name1 : context.name2)}: ${m.mes}`)
+            .join("\n");
 
-            const batchNumber = i / COGNEE_BACKFILL_BATCH_SIZE + 1;
-            $("#psychograph_cognee_backfill_status").text(`Sent batch ${batchNumber}/${totalBatches}...`);
+        $("#psychograph_cognee_backfill_status").text("Uploading chat history...");
+        const addResult = await addChatHistoryToCognee(document, chatCogneeId, context);
+
+        $("#psychograph_cognee_backfill_status").text("Starting cognify...");
+        await cognifyChatHistory(chatCogneeId);
+
+        const completed = await waitForCognifyCompletion(addResult.dataset_id);
+        if (completed === true) {
+            messages.forEach((m) => cogneeIngestedMessages.add(m));
+            toastr.success(`Sent ${messages.length} messages to Cognee.`, "Psychograph");
+        } else if (completed === false) {
+            toastr.error("Cognify failed, see Cognee server logs for details.", "Psychograph");
+        } else {
+            toastr.warning("Cognify is taking longer than expected; still running in the background.", "Psychograph");
         }
-        toastr.success(`Sent ${messages.length} messages to Cognee.`, "Psychograph");
     } catch (error) {
         console.error("[Psychograph] Backfill failed:", error);
         toastr.error("Backfill failed, see console for details.", "Psychograph");
