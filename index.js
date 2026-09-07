@@ -450,87 +450,12 @@ async function handleCogneeIngestion() {
 
 let cogneeBackfillRunning = false;
 
-function sleep(ms) {
-    return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-async function addChatHistoryToCognee(document, chatCogneeId, context) {
-    const settings = ensureSettings();
-    const formData = new FormData();
-    formData.append("raw_data", document);
-    formData.append("datasetName", `psychograph-chat-${chatCogneeId}`);
-    formData.append("labels", JSON.stringify(["chatlog"]));
-    formData.append("external_metadata", JSON.stringify([{
-        source: "chat history backfill",
-        participants: [context.name1, context.name2],
-    }]));
-    formData.append("node_set", context.name2);
-
-    const response = await fetch(`${settings.cognee.baseUrl.replace(/\/$/, "")}/api/v1/add`, {
-        method: "POST",
-        headers: { "X-Api-Key": settings.cognee.apiKey },
-        body: formData,
-    });
-
-    if (!response.ok) {
-        throw new Error(`Cognee /add failed: ${response.status} ${await response.text()}`);
-    }
-
-    return response.json();
-}
-
-async function cognifyChatHistory(chatCogneeId) {
-    const settings = ensureSettings();
-    const response = await fetch(`${settings.cognee.baseUrl.replace(/\/$/, "")}/api/v1/cognify`, {
-        method: "POST",
-        headers: { "X-Api-Key": settings.cognee.apiKey, "Content-Type": "application/json" },
-        body: JSON.stringify({
-            datasets: [`psychograph-chat-${chatCogneeId}`],
-            runInBackground: true,
-            chunkSize: COGNEE_CHUNK_SIZE,
-        }),
-    });
-
-    if (!response.ok) {
-        throw new Error(`Cognee /cognify failed: ${response.status} ${await response.text()}`);
-    }
-
-    return response.json();
-}
-
-const COGNEE_BACKFILL_POLL_INTERVAL_MS = 10000;
-const COGNEE_BACKFILL_POLL_TIMEOUT_MS = 30 * 60 * 1000;
-
-async function waitForCognifyCompletion(datasetId) {
-    const settings = ensureSettings();
-    const deadline = Date.now() + COGNEE_BACKFILL_POLL_TIMEOUT_MS;
-
-    while (Date.now() < deadline) {
-        const response = await fetch(
-            `${settings.cognee.baseUrl.replace(/\/$/, "")}/api/v1/datasets/status?dataset=${encodeURIComponent(datasetId)}`,
-            { headers: { "X-Api-Key": settings.cognee.apiKey } },
-        );
-        if (!response.ok) {
-            throw new Error(`Cognee /datasets/status failed: ${response.status} ${await response.text()}`);
-        }
-
-        const statuses = await response.json();
-        const status = statuses[datasetId];
-        $("#psychograph_cognee_backfill_status").text(`Cognify status: ${status}...`);
-
-        if (String(status).toLowerCase() === "completed") {
-            return true;
-        }
-        if (String(status).toLowerCase() === "failed") {
-            return false;
-        }
-
-        await sleep(COGNEE_BACKFILL_POLL_INTERVAL_MS);
-    }
-
-    return null; // timed out
-}
-
+// Reuses sendMessageToCognee() (the same /remember+session_id call the live
+// predecessor hook makes) one message at a time, rather than bundling many
+// messages into one call: each call's chunk is then bounded by a single
+// message's length, which is naturally small — avoiding the truncation
+// issue by construction instead of by tuning a batch/chunk size to guess
+// around it. Also means backfill and live ingestion are one code path.
 async function backfillChatHistoryToCognee() {
     if (cogneeBackfillRunning) {
         return;
@@ -554,25 +479,15 @@ async function backfillChatHistoryToCognee() {
     $("#psychograph_cognee_backfill").addClass("disabled");
 
     try {
-        const document = messages
-            .map((m) => `${m.name || (m.is_user ? context.name1 : context.name2)}: ${m.mes}`)
-            .join("\n");
+        for (let i = 0; i < messages.length; i++) {
+            const message = messages[i];
+            const speaker = message.name || (message.is_user ? context.name1 : context.name2);
+            await sendMessageToCognee(`${speaker}: ${message.mes}`, chatCogneeId);
+            cogneeIngestedMessages.add(message);
 
-        $("#psychograph_cognee_backfill_status").text("Uploading chat history...");
-        const addResult = await addChatHistoryToCognee(document, chatCogneeId, context);
-
-        $("#psychograph_cognee_backfill_status").text("Starting cognify...");
-        await cognifyChatHistory(chatCogneeId);
-
-        const completed = await waitForCognifyCompletion(addResult.dataset_id);
-        if (completed === true) {
-            messages.forEach((m) => cogneeIngestedMessages.add(m));
-            toastr.success(`Sent ${messages.length} messages to Cognee.`, "Psychograph");
-        } else if (completed === false) {
-            toastr.error("Cognify failed, see Cognee server logs for details.", "Psychograph");
-        } else {
-            toastr.warning("Cognify is taking longer than expected; still running in the background.", "Psychograph");
+            $("#psychograph_cognee_backfill_status").text(`Sent ${i + 1}/${messages.length}...`);
         }
+        toastr.success(`Sent ${messages.length} messages to Cognee.`, "Psychograph");
     } catch (error) {
         console.error("[Psychograph] Backfill failed:", error);
         toastr.error("Backfill failed, see console for details.", "Psychograph");
