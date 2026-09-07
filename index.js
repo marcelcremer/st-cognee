@@ -544,11 +544,27 @@ const COGNEE_RECALL_HEADING = "### Long-term context";
 // of the prompt (system prompt, character card, world info, chat history)
 // byte-identical to the previous turn for backends that reuse a KV/prompt
 // cache across requests.
+let cogneeRecallInFlight = false;
+
 async function handleCogneeRecall(type, _options, dryRun) {
     const settings = ensureSettings();
     if (dryRun || type === "quiet" || !settings.enabled || !settings.cognee.recallEnabled || !settings.cognee.baseUrl || !settings.cognee.apiKey) {
         return;
     }
+    if (cogneeRecallInFlight) {
+        console.warn("[Psychograph] Cognee recall already in progress, skipping this trigger.");
+        return;
+    }
+    cogneeRecallInFlight = true;
+
+    // Shows the native Send->Stop button state immediately: the real
+    // generation flow doesn't do this itself until much later (once the
+    // prompt is built and the actual LLM request starts), so without this
+    // the UI looks idle for the whole recall round trip and invites a
+    // second Enter press (which SillyTavern's own is_send_press guard does
+    // not block during this window).
+    const context = getContext();
+    context.deactivateSendButtons();
 
     try {
         const chatCogneeId = getCogneeChatId();
@@ -561,11 +577,14 @@ async function handleCogneeRecall(type, _options, dryRun) {
         console.log("[Psychograph] Cognee recall for next turn:", injectedText);
         toastr.info(injectedText, "Psychograph: Cognee recall", { timeOut: 8000 });
 
-        await getContext().executeSlashCommandsWithOptions(
+        await context.executeSlashCommandsWithOptions(
             `/inject id=${COGNEE_RECALL_INJECT_ID} position=chat ephemeral=true scan=true depth=0 role=system ${injectedText} |`,
         );
     } catch (error) {
         console.error("[Psychograph] Cognee recall failed:", error);
+    } finally {
+        cogneeRecallInFlight = false;
+        context.activateSendButtons();
     }
 }
 
