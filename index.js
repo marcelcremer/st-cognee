@@ -562,9 +562,15 @@ async function handleCogneeRecall(type, _options, dryRun) {
     // prompt is built and the actual LLM request starts), so without this
     // the UI looks idle for the whole recall round trip and invites a
     // second Enter press (which SillyTavern's own is_send_press guard does
-    // not block during this window).
+    // not block during this window, since it isn't set until deep inside
+    // Generate() - only the Send button's own click handler is separately
+    // mutex-protected). Disabling the textarea closes that Enter-key gap
+    // directly: a disabled textarea can't receive keyboard focus/events at
+    // all, so it doesn't depend on SillyTavern's internal is_send_press
+    // flag (which isn't exposed to extensions anyway).
     const context = getContext();
     context.deactivateSendButtons();
+    $("#send_textarea").prop("disabled", true);
 
     try {
         const chatCogneeId = getCogneeChatId();
@@ -585,6 +591,7 @@ async function handleCogneeRecall(type, _options, dryRun) {
     } finally {
         cogneeRecallInFlight = false;
         context.activateSendButtons();
+        $("#send_textarea").prop("disabled", false);
     }
 }
 
