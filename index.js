@@ -300,12 +300,17 @@ const defaultSettings = {
         recallEnabled: false,
     },
     state: {
-        target: "char",
         areas: Object.fromEntries(
             STATE_AREAS.map(({ key }) => [key, { useDefaultPrompt: true, customPrompt: "", enabled: true }]),
         ),
     },
 };
+
+// Which side of the conversation "Applies to" tracks — char or user —
+// varies by chat/scenario (sometimes the game drives the user, sometimes
+// the user drives the game), so it belongs in chat_metadata alongside the
+// slot values, not in the global settings.
+const DEFAULT_TARGET = "char";
 
 // Slot *values* belong to the conversation, not the user profile — they
 // live in chat_metadata (see ensureChatState() below), not in
@@ -329,7 +334,7 @@ function ensureSettings() {
 
     const settings = extension_settings[extensionName];
     settings.cognee = Object.assign(structuredClone(defaultSettings.cognee), settings.cognee);
-    settings.state = Object.assign({ target: defaultSettings.state.target }, settings.state);
+    settings.state = settings.state || {};
     settings.state.areas = settings.state.areas || {};
     for (const { key } of STATE_AREAS) {
         settings.state.areas[key] = Object.assign(
@@ -359,6 +364,7 @@ function ensureChatState() {
     }
 
     const chatState = chatMetadata[extensionName];
+    chatState.target = chatState.target || DEFAULT_TARGET;
     chatState.areas = chatState.areas || {};
     for (const { key } of STATE_AREAS) {
         const area = chatState.areas[key] || {};
@@ -392,7 +398,6 @@ function renderSettings() {
     $("#psychograph_cognee_enabled").prop("checked", settings.cognee.enabled);
     $("#psychograph_cognee_recall_enabled").prop("checked", settings.cognee.recallEnabled);
     renderCogneeChatSection();
-    $("#psychograph_state_target").val(settings.state.target);
 
     for (const { key, id } of STATE_AREAS) {
         const area = settings.state.areas[key];
@@ -404,12 +409,14 @@ function renderSettings() {
     renderChatState();
 }
 
-// Slot inputs reflect the CURRENT chat's state, so this runs both on
+// Reflects the CURRENT chat's state (target + slots), so this runs both on
 // initial load and on CHAT_CHANGED (see bindChatEvents) — otherwise the
 // panel would keep showing whatever chat was open when the extension
 // first loaded.
 function renderChatState() {
     const chatState = ensureChatState();
+    $("#psychograph_state_target").val(chatState.target);
+
     for (const { key, id } of STATE_AREAS) {
         const slots = chatState.areas[key].slots;
         for (const slot of AREA_SLOT_CONFIGS[key].slots) {
@@ -475,8 +482,8 @@ function bindSettingsEvents() {
     $("#psychograph_cognee_backfill").on("click", backfillChatHistoryToCognee);
 
     $("#psychograph_state_target").on("change", function () {
-        ensureSettings().state.target = String($(this).val());
-        saveSettingsDebounced();
+        ensureChatState().target = String($(this).val());
+        getContext().saveMetadataDebounced();
     });
 
     for (const { key, id } of STATE_AREAS) {
@@ -853,7 +860,7 @@ function isAreaTriggerRelevant(areaKey, eventType) {
             || eventType === event_types.MESSAGE_SWIPED;
     }
 
-    const target = ensureSettings().state.target;
+    const target = ensureChatState().target;
     if (target === "char") {
         return eventType === event_types.MESSAGE_RECEIVED || eventType === event_types.MESSAGE_SWIPED;
     }
@@ -1002,7 +1009,6 @@ async function rerunAreaExtractionNow(areaKey) {
 }
 
 async function initAreaFromDescription(areaKey) {
-    const settings = ensureSettings();
     const config = AREA_SLOT_CONFIGS[areaKey];
     const context = getContext();
     const fields = context.getCharacterCardFields();
@@ -1013,7 +1019,7 @@ async function initAreaFromDescription(areaKey) {
         seedText = fields.scenario;
         missingLabel = "No scenario found.";
     } else {
-        const target = settings.state.target;
+        const target = ensureChatState().target;
         seedText = target === "user" ? fields.persona : fields.description;
         missingLabel = target === "user" ? "No persona description found." : "No character description found.";
     }
