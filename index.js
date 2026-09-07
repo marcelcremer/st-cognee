@@ -306,11 +306,21 @@ const defaultSettings = {
         ),
     },
 };
-defaultSettings.state.areas.clothes.slots = Object.fromEntries(CLOTHING_SLOTS.map((slot) => [slot, ""]));
-defaultSettings.state.areas.physicalState.slots = Object.fromEntries(PHYSICAL_STATE_SLOTS.map((slot) => [slot, ""]));
-defaultSettings.state.areas.stateOfMind.slots = Object.fromEntries(STATE_OF_MIND_SLOTS.map((slot) => [slot, ""]));
-defaultSettings.state.areas.situational.slots = Object.fromEntries(SITUATIONAL_SLOTS.map((slot) => [slot, ""]));
-defaultSettings.state.areas.expectations.slots = Object.fromEntries(EXPECTATIONS_SLOTS.map((slot) => [slot, ""]));
+
+// Slot *values* belong to the conversation, not the user profile — they
+// live in chat_metadata (see ensureChatState() below), not in
+// extension_settings. Only the configuration above (enabled, prompts,
+// connection) is a global preference that should apply across every chat.
+// This mirrors how SillyTavern's own Author's Note feature splits its data:
+// global defaults in extension_settings, the actual per-conversation values
+// namespaced under chat_metadata[extensionName] (public/scripts/authors-note.js).
+const DEFAULT_AREA_SLOTS = {
+    clothes: Object.fromEntries(CLOTHING_SLOTS.map((slot) => [slot, ""])),
+    physicalState: Object.fromEntries(PHYSICAL_STATE_SLOTS.map((slot) => [slot, ""])),
+    stateOfMind: Object.fromEntries(STATE_OF_MIND_SLOTS.map((slot) => [slot, ""])),
+    situational: Object.fromEntries(SITUATIONAL_SLOTS.map((slot) => [slot, ""])),
+    expectations: Object.fromEntries(EXPECTATIONS_SLOTS.map((slot) => [slot, ""])),
+};
 
 function ensureSettings() {
     if (!extension_settings[extensionName]) {
@@ -322,17 +332,10 @@ function ensureSettings() {
     settings.state = Object.assign({ target: defaultSettings.state.target }, settings.state);
     settings.state.areas = settings.state.areas || {};
     for (const { key } of STATE_AREAS) {
-        const area = Object.assign(
+        settings.state.areas[key] = Object.assign(
             structuredClone(defaultSettings.state.areas[key]),
             settings.state.areas[key],
         );
-        if (defaultSettings.state.areas[key].slots) {
-            area.slots = Object.assign(
-                structuredClone(defaultSettings.state.areas[key].slots),
-                settings.state.areas[key]?.slots,
-            );
-        }
-        settings.state.areas[key] = area;
     }
     if (settings.enabled === undefined) {
         settings.enabled = defaultSettings.enabled;
@@ -342,6 +345,28 @@ function ensureSettings() {
     }
 
     return settings;
+}
+
+// Per-chat slot state, namespaced under chat_metadata[extensionName] so it
+// travels with the chat file (saved/loaded/exported with the chat) instead
+// of leaking between conversations. Always call getContext() fresh here —
+// chat_metadata is reassigned wholesale on chat switch/reset, so a cached
+// reference would silently point at a stale, orphaned object.
+function ensureChatState() {
+    const chatMetadata = getContext().chatMetadata;
+    if (!chatMetadata[extensionName]) {
+        chatMetadata[extensionName] = {};
+    }
+
+    const chatState = chatMetadata[extensionName];
+    chatState.areas = chatState.areas || {};
+    for (const { key } of STATE_AREAS) {
+        const area = chatState.areas[key] || {};
+        area.slots = Object.assign(structuredClone(DEFAULT_AREA_SLOTS[key]), area.slots);
+        chatState.areas[key] = area;
+    }
+
+    return chatState;
 }
 
 function populateConnectionProfiles() {
@@ -374,9 +399,21 @@ function renderSettings() {
         $(`#psychograph_state_${id}_enabled`).prop("checked", area.enabled);
         $(`#psychograph_state_${id}_default_prompt`).prop("checked", area.useDefaultPrompt);
         $(`#psychograph_state_${id}_custom_prompt`).val(area.customPrompt).prop("hidden", area.useDefaultPrompt);
+    }
 
+    renderChatState();
+}
+
+// Slot inputs reflect the CURRENT chat's state, so this runs both on
+// initial load and on CHAT_CHANGED (see bindChatEvents) — otherwise the
+// panel would keep showing whatever chat was open when the extension
+// first loaded.
+function renderChatState() {
+    const chatState = ensureChatState();
+    for (const { key, id } of STATE_AREAS) {
+        const slots = chatState.areas[key].slots;
         for (const slot of AREA_SLOT_CONFIGS[key].slots) {
-            $(`#psychograph_state_${id}_slot_${slot}`).val(area.slots[slot]);
+            $(`#psychograph_state_${id}_slot_${slot}`).val(slots[slot]);
         }
     }
 }
@@ -462,8 +499,8 @@ function bindSettingsEvents() {
 
         for (const slot of AREA_SLOT_CONFIGS[key].slots) {
             $(`#psychograph_state_${id}_slot_${slot}`).on("input", function () {
-                ensureSettings().state.areas[key].slots[slot] = String($(this).val());
-                saveSettingsDebounced();
+                ensureChatState().areas[key].slots[slot] = String($(this).val());
+                getContext().saveMetadataDebounced();
             });
         }
     }
@@ -531,10 +568,11 @@ async function runAreaExtraction(areaKey, message) {
     }
 
     const config = AREA_SLOT_CONFIGS[areaKey];
-    const area = settings.state.areas[areaKey];
-    const diffPrompt = area.useDefaultPrompt
+    const areaSettings = settings.state.areas[areaKey];
+    const area = ensureChatState().areas[areaKey];
+    const diffPrompt = areaSettings.useDefaultPrompt
         ? buildAreaDiffPrompt(config, message)
-        : area.customPrompt.replaceAll("{{message}}", message);
+        : areaSettings.customPrompt.replaceAll("{{message}}", message);
     const diffSchema = buildAreaDiffSchema(config);
 
     let diff;
@@ -572,7 +610,7 @@ async function runAreaExtraction(areaKey, message) {
         }
     }));
 
-    saveSettingsDebounced();
+    getContext().saveMetadataDebounced();
 }
 
 const COGNEE_METADATA_KEY = "stPsychograph";
@@ -867,6 +905,10 @@ function bindChatEvents() {
 
     eventSource.on(event_types.GENERATION_AFTER_COMMANDS, handleCogneeRecall);
     eventSource.on(event_types.GENERATION_ENDED, flushCogneeRecallInject);
+
+    // Slot inputs show the current chat's state — without this they'd keep
+    // displaying whatever chat was open when the panel was last rendered.
+    eventSource.on(event_types.CHAT_CHANGED, renderChatState);
 }
 
 const GUIDED_INJECT_ID = "psychograph_guide";
