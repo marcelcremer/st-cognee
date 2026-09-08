@@ -805,13 +805,18 @@ const COGNEE_RECALL_HEADING = "### Long-term context";
 
 // Hooked on GENERATION_AFTER_COMMANDS (fires for Send/Swipe/Continue alike,
 // awaited by SillyTavern before prompt assembly) so this network round trip
-// still lands in the SAME upcoming turn rather than the next one. The actual
-// /inject below uses depth=0 (tail of the chat section, right before the
-// generation cursor) regardless of when in that window we call it — that's
-// the latest position the injection mechanism offers, which keeps the rest
-// of the prompt (system prompt, character card, world info, chat history)
-// byte-identical to the previous turn for backends that reuse a KV/prompt
-// cache across requests.
+// still lands in the SAME upcoming turn rather than the next one.
+//
+// The /inject below uses position=after (extension_prompt_types.IN_PROMPT),
+// NOT position=chat (IN_CHAT). IN_CHAT injections are spliced as synthetic
+// messages into the chat history array - a completely separate mechanism
+// from the context/story-string template, so they never appear in it.
+// position=after is what actually renders into that template, as
+// `anchorAfter` - the same slot Author's Note "after story string" uses,
+// positioned right before the chat history. wiBefore/wiAfter in that
+// template are NOT reachable from an extension at all: they're populated
+// solely from activated World Info/lorebook entries, which /inject has no
+// access to.
 let cogneeRecallInFlight = false;
 
 async function handleCogneeRecall(type, _options, dryRun) {
@@ -852,7 +857,7 @@ async function handleCogneeRecall(type, _options, dryRun) {
         toastr.info(injectedText, "Psychograph: Cognee recall", { timeOut: 8000 });
 
         await context.executeSlashCommandsWithOptions(
-            `/inject id=${COGNEE_RECALL_INJECT_ID} position=chat ephemeral=true scan=true depth=0 role=system ${injectedText} |`,
+            `/inject id=${COGNEE_RECALL_INJECT_ID} position=after ephemeral=true scan=true ${injectedText} |`,
         );
     } catch (error) {
         console.error("[Psychograph] Cognee recall failed:", error);
