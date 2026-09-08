@@ -772,6 +772,9 @@ async function recallFromCognee(chatCogneeId) {
             query: buildCogneeRecallQuery(context.name1, context.name2),
             system_prompt: buildCogneeRecallSystemPrompt(context.name2),
             datasets: [`psychograph-chat-${chatCogneeId}`],
+            // scope: ["session", "graph"] was tried to also surface messages
+            // not yet bridged into the graph, but session-scope entries
+            // bypass system_prompt below and blew up recall into raw prose.
             scope: "graph",
             search_type: "GRAPH_COMPLETION",
         }),
@@ -788,15 +791,8 @@ async function recallFromCognee(chatCogneeId) {
 const COGNEE_RECALL_INJECT_ID = "psychograph_cognee_recall";
 const COGNEE_RECALL_HEADING = "### Long-term context";
 
-// Hooked on GENERATION_AFTER_COMMANDS (fires for Send/Swipe/Continue alike,
-// awaited by SillyTavern before prompt assembly) so this network round trip
-// still lands in the SAME upcoming turn rather than the next one. The actual
-// /inject below uses depth=0 (tail of the chat section, right before the
-// generation cursor) regardless of when in that window we call it — that's
-// the latest position the injection mechanism offers, which keeps the rest
-// of the prompt (system prompt, character card, world info, chat history)
-// byte-identical to the previous turn for backends that reuse a KV/prompt
-// cache across requests.
+// Hooked on GENERATION_AFTER_COMMANDS (awaited by SillyTavern) so this
+// network round trip lands in the same turn rather than the next one.
 let cogneeRecallInFlight = false;
 
 async function handleCogneeRecall(type, _options, dryRun) {
@@ -810,19 +806,11 @@ async function handleCogneeRecall(type, _options, dryRun) {
     }
     cogneeRecallInFlight = true;
 
-    // Shows the native Send->Stop button state immediately: the real
-    // generation flow doesn't do this itself until much later (once the
-    // prompt is built and the actual LLM request starts), so without this
-    // the UI looks idle for the whole recall round trip and invites a
-    // second Enter press (which SillyTavern's own is_send_press guard does
-    // not block during this window, since it isn't set until deep inside
-    // Generate() - only the Send button's own click handler is separately
-    // mutex-protected). Disabling the textarea closes that Enter-key gap
-    // directly: a disabled textarea can't receive keyboard focus/events at
-    // all, so it doesn't depend on SillyTavern's internal is_send_press
-    // flag (which isn't exposed to extensions anyway).
+    // Not calling context.deactivateSendButtons()/activateSendButtons() here
+    // (tried it, reverted): activateSendButtons() emits GENERATION_ENDED if
+    // the stop button is visible, which wipes the ephemeral inject this
+    // function just set before Generate() reaches prompt assembly.
     const context = getContext();
-    context.deactivateSendButtons();
     $("#send_textarea").prop("disabled", true);
 
     try {
@@ -836,14 +824,16 @@ async function handleCogneeRecall(type, _options, dryRun) {
         console.log("[Psychograph] Cognee recall for next turn:", injectedText);
         toastr.info(injectedText, "Psychograph: Cognee recall", { timeOut: 8000 });
 
+        // position=after (not position=chat): position=chat splices into the
+        // chat-history array, which never reaches the context/story-string
+        // template that's actually inspected as "the final prompt".
         await context.executeSlashCommandsWithOptions(
-            `/inject id=${COGNEE_RECALL_INJECT_ID} position=chat ephemeral=true scan=true depth=0 role=system ${injectedText} |`,
+            `/inject id=${COGNEE_RECALL_INJECT_ID} position=after ephemeral=true scan=true ${injectedText} |`,
         );
     } catch (error) {
         console.error("[Psychograph] Cognee recall failed:", error);
     } finally {
         cogneeRecallInFlight = false;
-        context.activateSendButtons();
         $("#send_textarea").prop("disabled", false);
     }
 }
@@ -856,13 +846,12 @@ function isAreaTriggerRelevant(areaKey, eventType) {
     const config = AREA_SLOT_CONFIGS[areaKey];
     if (config.triggerMode === "always") {
         return eventType === event_types.MESSAGE_SENT
-            || eventType === event_types.MESSAGE_RECEIVED
-            || eventType === event_types.MESSAGE_SWIPED;
+            || eventType === event_types.MESSAGE_RECEIVED;
     }
 
     const target = ensureChatState().target;
     if (target === "char") {
-        return eventType === event_types.MESSAGE_RECEIVED || eventType === event_types.MESSAGE_SWIPED;
+        return eventType === event_types.MESSAGE_RECEIVED;
     }
     return eventType === event_types.MESSAGE_SENT;
 }
@@ -900,11 +889,10 @@ function handleChatMessageEvent(eventType) {
 function bindChatEvents() {
     eventSource.on(event_types.MESSAGE_SENT, handleChatMessageEvent(event_types.MESSAGE_SENT));
     eventSource.on(event_types.MESSAGE_RECEIVED, handleChatMessageEvent(event_types.MESSAGE_RECEIVED));
-    eventSource.on(event_types.MESSAGE_SWIPED, handleChatMessageEvent(event_types.MESSAGE_SWIPED));
 
-    // Not bound on MESSAGE_SWIPED: swiping only changes the active swipe of
-    // the *last* message, never its predecessor, so it would just resend
-    // the same predecessor for no reason.
+    // Not bound on MESSAGE_SWIPED: it fires before a new swipe's text is
+    // generated, while chat[].mes still holds the previous swipe's content.
+    // MESSAGE_RECEIVED (type "swipe") already covers a finished swipe.
     eventSource.on(event_types.MESSAGE_SENT, handleCogneeIngestion);
     eventSource.on(event_types.MESSAGE_RECEIVED, handleCogneeIngestion);
 

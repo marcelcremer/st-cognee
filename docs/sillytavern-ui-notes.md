@@ -177,6 +177,36 @@ reaching into `characters[chid]` by hand.
 code. `context.swipe.right()` (SillyTavern ≥ 1.13.0) triggers a new swipe
 generation programmatically.
 
+## `/inject` position mapping (verified against `script.js`/`openai.js`)
+
+`/inject position=<before|after|chat|none>` maps to
+`extension_prompt_types.{BEFORE_PROMPT, IN_PROMPT, IN_CHAT, NONE}`. These are
+three genuinely different insertion points, not interchangeable:
+
+- `before` (`BEFORE_PROMPT`) / `after` (`IN_PROMPT`) — read via
+  `getExtensionPrompt(type)` (no depth) and fed into the Context Template
+  (the Handlebars-ish story-string template under
+  User Settings → Context Template) as `anchorBefore` / `anchorAfter`. This
+  is the same slot Author's Note "before/after story string" uses. For Chat
+  Completion APIs the equivalent is the prompt-manager collection, inserted
+  at `'start'`/`'end'` (`openai.js`'s `getPromptPosition`).
+- `chat` (`IN_CHAT`, requires `depth=`) — spliced in as a synthetic message
+  at the given depth into the actual chat-history message array
+  (`doChatInject` for Text Completion, `populationInjectionPrompts` for Chat
+  Completion). This is a **separate mechanism** from the Context Template
+  above and does not populate any of its fields.
+
+`wiBefore`/`wiAfter` in the Context Template are populated only from
+activated World Info/lorebook entries (`getWorldInfoPrompt`) — there is no
+`/inject` position that lands there; an extension would have to manage an
+actual (e.g. constant) lorebook entry to put content in that specific slot.
+
+Symptom this explains: content injected with `position=chat` can be
+completely absent from what a prompt inspector shows for the Context
+Template/system-prompt block, even though the `/inject` call itself
+succeeded - it went into the chat-history splice point instead, which is
+outside that template entirely.
+
 ## Debugging tip: clone, don't fetch
 
 Web-fetching SillyTavern's large core files (`index.html`, `script.js`,
