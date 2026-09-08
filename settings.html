@@ -244,6 +244,10 @@
                     </select>
                     <small>Retrieval strategy Cognee uses for the recall query. Cognee's own extraction/retrieval internals differ per type and aren't documented in the OpenAPI spec — test against your own instance rather than assuming which is fastest or most accurate.</small>
 
+                    <label for="psychograph_cognee_backfill_batch_size">Backfill batch size (messages per call)</label>
+                    <input id="psychograph_cognee_backfill_batch_size" type="number" class="text_pole" min="1" step="1" />
+                    <small>How many messages go into a single /remember call during backfill. Lower it if calls are timing out or overloading your Cognee instance's processing queue, raise it to finish backfill in fewer calls.</small>
+
                     <hr>
                     <div id="psychograph_cognee_chat_section">
                         <label>Current chat</label>
@@ -254,6 +258,7 @@
                             <div id="psychograph_cognee_chat_id_set" class="menu_button">Set</div>
                             <div id="psychograph_cognee_chat_id_regenerate" class="menu_button">Regenerate</div>
                         </div>
+                        <div><small id="psychograph_cognee_backfill_progress">Backfilled: 0/0</small></div>
                         <div id="psychograph_cognee_backfill" class="menu_button">Send full chat history to Cognee</div>
                         <small id="psychograph_cognee_backfill_status"></small>
                     </div>

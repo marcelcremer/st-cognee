@@ -298,6 +298,7 @@ const defaultSettings = {
         apiKey: "",
         enabled: false,
         searchType: "GRAPH_COMPLETION",
+        backfillBatchSize: 20,
     },
     state: {
         areas: Object.fromEntries(
@@ -397,6 +398,7 @@ function renderSettings() {
     $("#psychograph_cognee_api_key").val(settings.cognee.apiKey);
     $("#psychograph_cognee_enabled").prop("checked", settings.cognee.enabled);
     $("#psychograph_cognee_search_type").val(settings.cognee.searchType);
+    $("#psychograph_cognee_backfill_batch_size").val(settings.cognee.backfillBatchSize);
     renderCogneeChatSection();
 
     for (const { key, id } of STATE_AREAS) {
@@ -453,6 +455,12 @@ function bindSettingsEvents() {
 
     $("#psychograph_cognee_search_type").on("change", function () {
         ensureSettings().cognee.searchType = String($(this).val());
+        saveSettingsDebounced();
+    });
+
+    $("#psychograph_cognee_backfill_batch_size").on("input", function () {
+        const value = Math.max(1, parseInt(String($(this).val()), 10) || 1);
+        ensureSettings().cognee.backfillBatchSize = value;
         saveSettingsDebounced();
     });
 
@@ -632,7 +640,13 @@ function readCogneeChatId() {
 
 function writeCogneeChatId(id) {
     const context = getContext();
-    context.chatMetadata[COGNEE_METADATA_KEY] = { ...context.chatMetadata[COGNEE_METADATA_KEY], cogneeChatId: id };
+    // A new/changed id points at a different Cognee dataset, so whatever was
+    // backfilled under the old id says nothing about the new one.
+    context.chatMetadata[COGNEE_METADATA_KEY] = {
+        ...context.chatMetadata[COGNEE_METADATA_KEY],
+        cogneeChatId: id,
+        cogneeBackfilledCount: 0,
+    };
     context.saveMetadataDebounced();
 }
 
@@ -640,10 +654,32 @@ function getCogneeChatId() {
     return readCogneeChatId() ?? (writeCogneeChatId(crypto.randomUUID()), readCogneeChatId());
 }
 
+// How many of this chat's backfillable messages (in the same chronological
+// order backfillChatHistoryToCognee processes them) have already been sent —
+// persisted per chat so re-running backfill after a partial run (or a
+// restart mid-run) resumes instead of re-sending from the start.
+function readCogneeBackfilledCount() {
+    return getContext().chatMetadata[COGNEE_METADATA_KEY]?.cogneeBackfilledCount ?? 0;
+}
+
+function writeCogneeBackfilledCount(count) {
+    const context = getContext();
+    context.chatMetadata[COGNEE_METADATA_KEY] = { ...context.chatMetadata[COGNEE_METADATA_KEY], cogneeBackfilledCount: count };
+    context.saveMetadataDebounced();
+}
+
+function getCogneeBackfillableMessages() {
+    return getContext().chat.filter((m) => m.mes && m.mes.trim());
+}
+
 function renderCogneeChatSection() {
     const id = readCogneeChatId();
     $("#psychograph_cognee_chat_id").text(id || "not set yet");
     $("#psychograph_cognee_chat_dataset").text(id ? `psychograph-chat-${id}` : "—");
+
+    const total = getCogneeBackfillableMessages().length;
+    const backfilled = Math.min(readCogneeBackfilledCount(), total);
+    $("#psychograph_cognee_backfill_progress").text(`Backfilled: ${backfilled}/${total}`);
 }
 
 // Explicit and small rather than trusting Cognee's default (4096): a dense
@@ -717,9 +753,11 @@ let cogneeBackfillRunning = false;
 // for a long chat — this is what was clogging Cognee's processing queue for
 // hours. chunk_size still bounds how Cognee splits each call's raw_data for
 // extraction, so batching doesn't reintroduce the truncation issue the old
-// one-message-at-a-time approach was originally avoiding.
-const COGNEE_BACKFILL_BATCH_SIZE = 20;
-
+// one-message-at-a-time approach was originally avoiding. Batch size is a
+// user setting (settings.cognee.backfillBatchSize) since the right tradeoff
+// between fewer calls and bounded per-call cognify time depends on the
+// user's own Cognee instance/model.
+//
 // Skips the session cache (useSessionCache: false — see sendMessageToCognee)
 // and goes straight through add+cognify into the permanent graph. The
 // session-cache path is fire-and-forget with no visibility into whether/when
@@ -727,6 +765,11 @@ const COGNEE_BACKFILL_BATCH_SIZE = 20;
 // import we want the deterministic path instead, per the original ingestion
 // split in issue #4 (session cache for the live conversation, direct
 // add+cognify for the permanent graph).
+//
+// Resumable: progress is persisted per chat (readCogneeBackfilledCount) after
+// every successful batch, not just at the end, so pressing the button again
+// after a partial run (error, or the tab was closed mid-run) picks up where
+// it left off instead of re-sending everything from the start.
 async function backfillChatHistoryToCognee() {
     if (cogneeBackfillRunning) {
         return;
@@ -739,19 +782,26 @@ async function backfillChatHistoryToCognee() {
     }
 
     const context = getContext();
-    const messages = context.chat.filter((m) => m.mes && m.mes.trim());
+    const messages = getCogneeBackfillableMessages();
     if (messages.length === 0) {
         toastr.info("No messages in this chat yet.", "Psychograph");
         return;
     }
 
+    const alreadyBackfilled = Math.min(readCogneeBackfilledCount(), messages.length);
+    if (alreadyBackfilled >= messages.length) {
+        toastr.info("Everything in this chat is already backfilled.", "Psychograph");
+        return;
+    }
+
+    const batchSize = Math.max(1, settings.cognee.backfillBatchSize);
     const chatCogneeId = getCogneeChatId();
     cogneeBackfillRunning = true;
     $("#psychograph_cognee_backfill").addClass("disabled");
 
     try {
-        for (let i = 0; i < messages.length; i += COGNEE_BACKFILL_BATCH_SIZE) {
-            const batch = messages.slice(i, i + COGNEE_BACKFILL_BATCH_SIZE);
+        for (let i = alreadyBackfilled; i < messages.length; i += batchSize) {
+            const batch = messages.slice(i, i + batchSize);
             const texts = batch.map((message) => {
                 const speaker = message.name || (message.is_user ? context.name1 : context.name2);
                 return `${speaker}: ${message.mes}`;
@@ -762,17 +812,20 @@ async function backfillChatHistoryToCognee() {
                 cogneeIngestedMessages.add(message);
             }
 
-            const sent = Math.min(i + COGNEE_BACKFILL_BATCH_SIZE, messages.length);
+            const sent = Math.min(i + batchSize, messages.length);
+            writeCogneeBackfilledCount(sent);
             $("#psychograph_cognee_backfill_status").text(`Sent ${sent}/${messages.length}...`);
+            renderCogneeChatSection();
         }
-        toastr.success(`Sent ${messages.length} messages to Cognee.`, "Psychograph");
+        toastr.success(`Sent ${messages.length - alreadyBackfilled} messages to Cognee.`, "Psychograph");
     } catch (error) {
         console.error("[Psychograph] Backfill failed:", error);
-        toastr.error("Backfill failed, see console for details.", "Psychograph");
+        toastr.error("Backfill failed, see console for details. Press the button again to resume from where it stopped.", "Psychograph");
     } finally {
         cogneeBackfillRunning = false;
         $("#psychograph_cognee_backfill").removeClass("disabled");
         $("#psychograph_cognee_backfill_status").text("");
+        renderCogneeChatSection();
     }
 }
 
