@@ -248,6 +248,12 @@
                     <input id="psychograph_cognee_backfill_batch_size" type="number" class="text_pole" min="1" step="1" />
                     <small>How many messages go into a single /remember call during backfill. Lower it if calls are timing out or overloading your Cognee instance's processing queue, raise it to finish backfill in fewer calls.</small>
 
+                    <label class="checkbox_label" for="psychograph_cognee_backfill_memify_enabled">
+                        <input id="psychograph_cognee_backfill_memify_enabled" type="checkbox" />
+                        Run entity dedup (memify) after each backfill batch
+                    </label>
+                    <small>Runs Cognee's detect_entity_duplicates/merge_entity_duplicates after every batch, before the next one starts, so names/pronouns introduced in one batch get merged with earlier mentions instead of splitting into duplicate graph entities. Makes backfill slower (one extra call per batch).</small>
+
                     <hr>
                     <div id="psychograph_cognee_chat_section">
                         <label>Current chat</label>

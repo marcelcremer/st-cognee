@@ -299,6 +299,7 @@ const defaultSettings = {
         enabled: false,
         searchType: "GRAPH_COMPLETION",
         backfillBatchSize: 20,
+        backfillMemifyEnabled: false,
     },
     state: {
         areas: Object.fromEntries(
@@ -399,6 +400,7 @@ function renderSettings() {
     $("#psychograph_cognee_enabled").prop("checked", settings.cognee.enabled);
     $("#psychograph_cognee_search_type").val(settings.cognee.searchType);
     $("#psychograph_cognee_backfill_batch_size").val(settings.cognee.backfillBatchSize);
+    $("#psychograph_cognee_backfill_memify_enabled").prop("checked", settings.cognee.backfillMemifyEnabled);
     renderCogneeChatSection();
 
     for (const { key, id } of STATE_AREAS) {
@@ -461,6 +463,11 @@ function bindSettingsEvents() {
     $("#psychograph_cognee_backfill_batch_size").on("input", function () {
         const value = Math.max(1, parseInt(String($(this).val()), 10) || 1);
         ensureSettings().cognee.backfillBatchSize = value;
+        saveSettingsDebounced();
+    });
+
+    $("#psychograph_cognee_backfill_memify_enabled").on("change", function () {
+        ensureSettings().cognee.backfillMemifyEnabled = $(this).prop("checked");
         saveSettingsDebounced();
     });
 
@@ -646,12 +653,35 @@ async function runAreaExtraction(areaKey, message) {
 
 const COGNEE_METADATA_KEY = "stPsychograph";
 
+function slugify(text) {
+    return String(text || "")
+        .toLowerCase()
+        .trim()
+        .replace(/[^a-z0-9]+/g, "-")
+        .replace(/^-+|-+$/g, "") || "character";
+}
+
 // Stored in chat_metadata (saved inside the chat file itself) rather than
 // derived from the chat's filename/chatId, so it survives a chat rename —
 // this is the id that scopes a Cognee dataset/session to one specific
 // roleplay instance, since the same character can have many separate chats.
 function readCogneeChatId() {
     return getContext().chatMetadata[COGNEE_METADATA_KEY]?.cogneeChatId;
+}
+
+// The actual Cognee datasetName. Captured once at id-creation time (not
+// re-derived from the current character name on every read) so it stays
+// stable even if the character card gets renamed later, and so pasting an
+// id via "Set" always resolves to the exact dataset that id was created
+// under. Chats that already had a cogneeChatId before this naming scheme
+// existed have no stored cogneeDatasetName — those fall back to the old
+// id-only format instead of getting a new (empty) dataset name.
+function readCogneeDatasetName() {
+    const stored = getContext().chatMetadata[COGNEE_METADATA_KEY];
+    if (stored?.cogneeDatasetName) {
+        return stored.cogneeDatasetName;
+    }
+    return stored?.cogneeChatId ? `psychograph-chat-${stored.cogneeChatId}` : undefined;
 }
 
 function writeCogneeChatId(id) {
@@ -661,6 +691,7 @@ function writeCogneeChatId(id) {
     context.chatMetadata[COGNEE_METADATA_KEY] = {
         ...context.chatMetadata[COGNEE_METADATA_KEY],
         cogneeChatId: id,
+        cogneeDatasetName: `psychograph-${slugify(context.name2)}_${id}`,
         cogneeBackfilledCount: 0,
     };
     context.saveMetadataDebounced();
@@ -691,7 +722,7 @@ function getCogneeBackfillableMessages() {
 function renderCogneeChatSection() {
     const id = readCogneeChatId();
     $("#psychograph_cognee_chat_id").text(id || "not set yet");
-    $("#psychograph_cognee_chat_dataset").text(id ? `psychograph-chat-${id}` : "—");
+    $("#psychograph_cognee_chat_dataset").text(id ? readCogneeDatasetName() : "—");
 
     const total = getCogneeBackfillableMessages().length;
     const backfilled = Math.min(readCogneeBackfilledCount(), total);
@@ -716,7 +747,7 @@ async function sendMessageToCognee(texts, chatCogneeId, { useSessionCache = true
     for (const text of Array.isArray(texts) ? texts : [texts]) {
         formData.append("raw_data", text);
     }
-    formData.append("datasetName", `psychograph-chat-${chatCogneeId}`);
+    formData.append("datasetName", readCogneeDatasetName());
     if (useSessionCache) {
         formData.append("session_id", chatCogneeId);
     }
@@ -737,6 +768,37 @@ async function sendMessageToCognee(texts, chatCogneeId, { useSessionCache = true
     }
 
     console.log(`[Psychograph] Cognee /remember (${textCount} msg, session=${useSessionCache}) took ${elapsedMs}ms:`, await response.json());
+}
+
+// Entity dedup pass (docs/memory-system.md §3, issue #4): detect_entity_duplicates
+// + merge_entity_duplicates is the documented mitigation for pronouns/nicknames
+// ("Henderson" vs "Mr. Henderson") landing as separate graph entities instead of
+// being merged. Run per-batch during backfill (see backfillChatHistoryToCognee)
+// rather than once at the end, since each batch is its own isolated cognify run
+// and duplicates most likely need merging right after the batch that introduced
+// them, before the next batch adds more.
+async function runCogneeMemify() {
+    const settings = ensureSettings();
+    const datasetName = readCogneeDatasetName();
+
+    const startedAt = performance.now();
+    const response = await fetch(`${settings.cognee.baseUrl.replace(/\/$/, "")}/api/v1/memify`, {
+        method: "POST",
+        headers: { "X-Api-Key": settings.cognee.apiKey, "Content-Type": "application/json" },
+        body: JSON.stringify({
+            dataset_name: datasetName,
+            extractionTasks: ["detect_entity_duplicates"],
+            enrichmentTasks: ["merge_entity_duplicates"],
+        }),
+    });
+    const elapsedMs = Math.round(performance.now() - startedAt);
+
+    if (!response.ok) {
+        console.error(`[Psychograph] Cognee /memify (${datasetName}) failed after ${elapsedMs}ms`);
+        throw new Error(`Cognee /memify failed: ${response.status} ${await response.text()}`);
+    }
+
+    console.log(`[Psychograph] Cognee /memify (${datasetName}) took ${elapsedMs}ms:`, await response.json());
 }
 
 const cogneeIngestedMessages = new WeakSet();
@@ -836,6 +898,11 @@ async function backfillChatHistoryToCognee() {
             writeCogneeBackfilledCount(sent);
             $("#psychograph_cognee_backfill_status").text(`Sent ${sent}/${messages.length}...`);
             renderCogneeChatSection();
+
+            if (settings.cognee.backfillMemifyEnabled) {
+                $("#psychograph_cognee_backfill_status").text(`Sent ${sent}/${messages.length}, deduping entities...`);
+                await runCogneeMemify();
+            }
         }
         toastr.success(`Sent ${messages.length - alreadyBackfilled} messages to Cognee.`, "Psychograph");
     } catch (error) {
@@ -855,7 +922,7 @@ function buildCogneeRecallQuery(userName, charName) {
     return `This is an ongoing roleplay between ${userName} and ${charName}. Retrieve everything you know that is relevant for playing ${charName}'s next turn as realistically and consistently as possible — established relationships, unresolved plot threads, recent events, and ${charName}'s own goals, emotional state, and knowledge at this point in the story.`;
 }
 
-async function recallFromCognee(chatCogneeId) {
+async function recallFromCognee() {
     const settings = ensureSettings();
     const context = getContext();
 
@@ -865,7 +932,7 @@ async function recallFromCognee(chatCogneeId) {
         headers: { "X-Api-Key": settings.cognee.apiKey, "Content-Type": "application/json" },
         body: JSON.stringify({
             query: buildCogneeRecallQuery(context.name1, context.name2),
-            datasets: [`psychograph-chat-${chatCogneeId}`],
+            datasets: [readCogneeDatasetName()],
             // scope: ["session", "graph"] was tried to also surface messages
             // not yet bridged into the graph, but session-scope entries
             // bypassed the completion system prompt and blew up recall into
@@ -918,8 +985,8 @@ async function handleCogneeRecall(type, _options, dryRun) {
     $("#send_textarea").prop("disabled", true);
 
     try {
-        const chatCogneeId = getCogneeChatId();
-        const recalled = await recallFromCognee(chatCogneeId);
+        getCogneeChatId();
+        const recalled = await recallFromCognee();
         if (!recalled) {
             return;
         }
