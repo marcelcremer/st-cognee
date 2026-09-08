@@ -652,14 +652,22 @@ function renderCogneeChatSection() {
 // in practice as "finish_reason=length" + a schema-validation failure).
 const COGNEE_CHUNK_SIZE = 1024;
 
-async function sendMessageToCognee(texts, chatCogneeId) {
+// useSessionCache routes through the session cache + background bridge into
+// the permanent graph (fine for live messages — see handleCogneeIngestion,
+// there's usually enough time before the next turn for the bridge to run).
+// Bulk backfill needs the deterministic path instead (see
+// backfillChatHistoryToCognee): datasetName is what actually scopes data to
+// this chat's graph either way, session_id only changes how it gets there.
+async function sendMessageToCognee(texts, chatCogneeId, { useSessionCache = true } = {}) {
     const settings = ensureSettings();
     const formData = new FormData();
     for (const text of Array.isArray(texts) ? texts : [texts]) {
         formData.append("raw_data", text);
     }
     formData.append("datasetName", `psychograph-chat-${chatCogneeId}`);
-    formData.append("session_id", chatCogneeId);
+    if (useSessionCache) {
+        formData.append("session_id", chatCogneeId);
+    }
     formData.append("chunk_size", String(COGNEE_CHUNK_SIZE));
 
     const response = await fetch(`${settings.cognee.baseUrl.replace(/\/$/, "")}/api/v1/remember`, {
@@ -703,12 +711,22 @@ async function handleCogneeIngestion() {
 
 let cogneeBackfillRunning = false;
 
-// Reuses sendMessageToCognee() (the same /remember+session_id call the live
-// predecessor hook makes) one message at a time, rather than bundling many
-// messages into one call: each call's chunk is then bounded by a single
-// message's length, which is naturally small — avoiding the truncation
-// issue by construction instead of by tuning a batch/chunk size to guess
-// around it. Also means backfill and live ingestion are one code path.
+// Batches of messages per /remember call, not one call per message: each
+// call without session_id (see below) triggers its own add+cognify pipeline
+// run, so one-per-message meant hundreds of separately queued pipeline runs
+// for a long chat — this is what was clogging Cognee's processing queue for
+// hours. chunk_size still bounds how Cognee splits each call's raw_data for
+// extraction, so batching doesn't reintroduce the truncation issue the old
+// one-message-at-a-time approach was originally avoiding.
+const COGNEE_BACKFILL_BATCH_SIZE = 20;
+
+// Skips the session cache (useSessionCache: false — see sendMessageToCognee)
+// and goes straight through add+cognify into the permanent graph. The
+// session-cache path is fire-and-forget with no visibility into whether/when
+// the background bridge into the graph actually runs; for a one-off bulk
+// import we want the deterministic path instead, per the original ingestion
+// split in issue #4 (session cache for the live conversation, direct
+// add+cognify for the permanent graph).
 async function backfillChatHistoryToCognee() {
     if (cogneeBackfillRunning) {
         return;
@@ -732,13 +750,20 @@ async function backfillChatHistoryToCognee() {
     $("#psychograph_cognee_backfill").addClass("disabled");
 
     try {
-        for (let i = 0; i < messages.length; i++) {
-            const message = messages[i];
-            const speaker = message.name || (message.is_user ? context.name1 : context.name2);
-            await sendMessageToCognee(`${speaker}: ${message.mes}`, chatCogneeId);
-            cogneeIngestedMessages.add(message);
+        for (let i = 0; i < messages.length; i += COGNEE_BACKFILL_BATCH_SIZE) {
+            const batch = messages.slice(i, i + COGNEE_BACKFILL_BATCH_SIZE);
+            const texts = batch.map((message) => {
+                const speaker = message.name || (message.is_user ? context.name1 : context.name2);
+                return `${speaker}: ${message.mes}`;
+            });
 
-            $("#psychograph_cognee_backfill_status").text(`Sent ${i + 1}/${messages.length}...`);
+            await sendMessageToCognee(texts, chatCogneeId, { useSessionCache: false });
+            for (const message of batch) {
+                cogneeIngestedMessages.add(message);
+            }
+
+            const sent = Math.min(i + COGNEE_BACKFILL_BATCH_SIZE, messages.length);
+            $("#psychograph_cognee_backfill_status").text(`Sent ${sent}/${messages.length}...`);
         }
         toastr.success(`Sent ${messages.length} messages to Cognee.`, "Psychograph");
     } catch (error) {
