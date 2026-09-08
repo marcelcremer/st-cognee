@@ -772,21 +772,9 @@ async function recallFromCognee(chatCogneeId) {
             query: buildCogneeRecallQuery(context.name1, context.name2),
             system_prompt: buildCogneeRecallSystemPrompt(context.name2),
             datasets: [`psychograph-chat-${chatCogneeId}`],
-            // Tried adding scope: ["session", "graph"] + session_id so recent
-            // messages still sitting in the session cache (ingestion always
-            // sets session_id, so everything lands there first and is only
-            // bridged into the permanent graph in the background - see
-            // /remember in the OpenAPI spec) would show up before that bridge
-            // runs. Reverted: "session" scope returns raw ResponseQAEntry
-            // records (question/context/answer) that never pass through
-            // system_prompt below, and search_type: null let the graph side
-            // auto-route to a less concise strategy too - together that blew
-            // up recall output to several times its normal length, full of
-            // raw prose instead of the requested short bullet points. Back to
-            // graph-only + an explicit completion search type, which keeps
-            // recall bounded to what buildCogneeRecallSystemPrompt asks for,
-            // at the cost of not seeing anything not yet bridged into the
-            // graph.
+            // scope: ["session", "graph"] was tried to also surface messages
+            // not yet bridged into the graph, but session-scope entries
+            // bypass system_prompt below and blew up recall into raw prose.
             scope: "graph",
             search_type: "GRAPH_COMPLETION",
         }),
@@ -803,20 +791,8 @@ async function recallFromCognee(chatCogneeId) {
 const COGNEE_RECALL_INJECT_ID = "psychograph_cognee_recall";
 const COGNEE_RECALL_HEADING = "### Long-term context";
 
-// Hooked on GENERATION_AFTER_COMMANDS (fires for Send/Swipe/Continue alike,
-// awaited by SillyTavern before prompt assembly) so this network round trip
-// still lands in the SAME upcoming turn rather than the next one.
-//
-// The /inject below uses position=after (extension_prompt_types.IN_PROMPT),
-// NOT position=chat (IN_CHAT). IN_CHAT injections are spliced as synthetic
-// messages into the chat history array - a completely separate mechanism
-// from the context/story-string template, so they never appear in it.
-// position=after is what actually renders into that template, as
-// `anchorAfter` - the same slot Author's Note "after story string" uses,
-// positioned right before the chat history. wiBefore/wiAfter in that
-// template are NOT reachable from an extension at all: they're populated
-// solely from activated World Info/lorebook entries, which /inject has no
-// access to.
+// Hooked on GENERATION_AFTER_COMMANDS (awaited by SillyTavern) so this
+// network round trip lands in the same turn rather than the next one.
 let cogneeRecallInFlight = false;
 
 async function handleCogneeRecall(type, _options, dryRun) {
@@ -830,22 +806,10 @@ async function handleCogneeRecall(type, _options, dryRun) {
     }
     cogneeRecallInFlight = true;
 
-    // Deliberately NOT calling context.deactivateSendButtons()/
-    // activateSendButtons() here (tried it, reverted): activateSendButtons()
-    // calls SillyTavern's hideStopButton(), which - if the stop button is
-    // currently visible - emits GENERATION_ENDED right there. Since
-    // deactivateSendButtons() (called at the top of this function) is what
-    // makes it visible in the first place, calling both back to back around
-    // the recall round trip fires a GENERATION_ENDED before Generate() ever
-    // reaches prompt assembly. Our own GENERATION_ENDED listener
-    // (flushCogneeRecallInject) and the /inject ephemeral=true cleanup hook
-    // both react to that by immediately deleting the extension prompt this
-    // function just set, so the recall text never survives into the actual
-    // prompt. Disabling the textarea below is what actually closes the
-    // double-Enter gap (a disabled textarea can't receive keyboard
-    // focus/events, independent of SillyTavern's internal is_send_press
-    // flag, which isn't exposed to extensions anyway) - the button dance was
-    // a redundant visual nicety not worth this side effect.
+    // Not calling context.deactivateSendButtons()/activateSendButtons() here
+    // (tried it, reverted): activateSendButtons() emits GENERATION_ENDED if
+    // the stop button is visible, which wipes the ephemeral inject this
+    // function just set before Generate() reaches prompt assembly.
     const context = getContext();
     $("#send_textarea").prop("disabled", true);
 
@@ -860,6 +824,9 @@ async function handleCogneeRecall(type, _options, dryRun) {
         console.log("[Psychograph] Cognee recall for next turn:", injectedText);
         toastr.info(injectedText, "Psychograph: Cognee recall", { timeOut: 8000 });
 
+        // position=after (not position=chat): position=chat splices into the
+        // chat-history array, which never reaches the context/story-string
+        // template that's actually inspected as "the final prompt".
         await context.executeSlashCommandsWithOptions(
             `/inject id=${COGNEE_RECALL_INJECT_ID} position=after ephemeral=true scan=true ${injectedText} |`,
         );
@@ -923,15 +890,9 @@ function bindChatEvents() {
     eventSource.on(event_types.MESSAGE_SENT, handleChatMessageEvent(event_types.MESSAGE_SENT));
     eventSource.on(event_types.MESSAGE_RECEIVED, handleChatMessageEvent(event_types.MESSAGE_RECEIVED));
 
-    // Not bound on MESSAGE_SWIPED: SillyTavern fires it the instant a swipe
-    // is *requested*, before a newly generated swipe's text exists - at that
-    // point chat[].mes still holds the previous swipe's content, so running
-    // extraction there would reprocess stale text. When a swipe finishes
-    // generating, SillyTavern fires MESSAGE_RECEIVED (type "swipe") with the
-    // final text already in place, which is already bound above. Cycling to
-    // a swipe that was already generated fires only MESSAGE_SWIPED, with no
-    // new content to extract - correctly skipped here for the same reason
-    // it's skipped for Cognee ingestion below.
+    // Not bound on MESSAGE_SWIPED: it fires before a new swipe's text is
+    // generated, while chat[].mes still holds the previous swipe's content.
+    // MESSAGE_RECEIVED (type "swipe") already covers a finished swipe.
     eventSource.on(event_types.MESSAGE_SENT, handleCogneeIngestion);
     eventSource.on(event_types.MESSAGE_RECEIVED, handleCogneeIngestion);
 

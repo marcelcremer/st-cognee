@@ -72,6 +72,14 @@ This applies to every layer, not just initial scaffolding — resist adding a
 state-management library, a graph-viz library, etc. unless the task genuinely
 can't be done without one.
 
+## Code comments
+
+Default to no comments. Only add one when nothing else (types, tests, naming,
+the diff/PR description) already explains why the code does something
+non-obvious — never to restate what the code does. Max 1-2 sentences, stating
+only the why (a hidden constraint, a workaround, a non-obvious side effect),
+never a walkthrough of the code itself.
+
 ## Extraction prompt wording
 
 The wording of LLM extraction prompts (e.g. `buildDefaultClothingDiffPrompt`,
