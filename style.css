@@ -78,3 +78,17 @@
     cursor: pointer;
     white-space: nowrap;
 }
+
+.psychograph-tools-menu .psychograph-menu-divider {
+    padding: 6px 12px 2px;
+    font-size: 0.8em;
+    font-weight: bold;
+    opacity: 0.7;
+    text-transform: uppercase;
+    white-space: nowrap;
+    border-top: 1px solid var(--SmartThemeBorderColor, var(--SmartThemeBodyColor));
+}
+
+.psychograph-tools-menu .psychograph-menu-divider:first-child {
+    border-top: none;
+}

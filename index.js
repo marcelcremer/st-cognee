@@ -15,85 +15,50 @@ const STATE_AREAS = [
 ];
 
 const CLOTHING_SLOTS = ["top", "bottom", "underwear", "legwear", "footwear", "accessories", "hair", "makeup"];
-const CLOTHING_DIFF_MAX_TOKENS = 250;
-const CLOTHING_SLOT_UPDATE_MAX_TOKENS = 200;
+const PHYSICAL_STATE_SLOTS = ["build", "health", "marks", "restraints", "mood"];
+const STATE_OF_MIND_SLOTS = ["beliefs", "trauma", "conditioning", "triggers", "alters", "influences"];
+const SITUATIONAL_SLOTS = ["location", "features", "timeOfDay", "weather", "privacyRisk", "ambient"];
+const EXPECTATIONS_SLOTS = ["rules"];
 
-// "reasoning" is declared first (and listed first in `required`) so that on
-// backends doing real grammar-constrained decoding, the model is forced to
-// think through each category in prose BEFORE it has to commit to the
-// booleans — a schema with the answer fields first forces a snap judgment
-// with no way to reconsider. Key order matters here, not just presence.
-const CLOTHING_DIFF_SCHEMA = {
-    type: "object",
-    properties: {
-        reasoning: {
-            type: "string",
-            description: "One short clause per clothing category (top, bottom, underwear, legwear, footwear, accessories, hair, makeup, in that order), noting whether the message explicitly touches on it and why.",
-        },
-        top: { type: "boolean", description: "True if the message contains any explicit info about tops (shirts, jackets, coats, etc.) — new item, layering, removal, or state/damage change." },
-        bottom: { type: "boolean", description: "True if the message mentions pants, skirts, shorts, a dress's lower half, etc. — same criteria as top." },
-        underwear: { type: "boolean", description: "True if bra, panties, boxers, etc. are mentioned or implied to change." },
-        legwear: { type: "boolean", description: "True if stockings, tights, socks, garters are mentioned or changed." },
-        footwear: { type: "boolean", description: "True if shoes, boots, heels are mentioned, put on, or removed." },
-        accessories: { type: "boolean", description: "True if jewelry, glasses, hats, belts, or similar are mentioned or changed." },
-        hair: { type: "boolean", description: "True if hairstyle is described, mentioned, or changed (not just touched/moved)." },
-        makeup: { type: "boolean", description: "True if makeup is applied, described, smeared, or removed." },
-    },
-    required: ["reasoning", ...CLOTHING_SLOTS],
-    additionalProperties: false,
-};
+const AREA_DIFF_MAX_TOKENS = 250;
+const AREA_SLOT_UPDATE_MAX_TOKENS = 200;
+const AREA_GATE_MAX_TOKENS = 200;
 
-const CLOTHING_SLOT_UPDATE_SCHEMA = {
-    type: "object",
-    properties: {
-        reasoning: {
-            type: "string",
-            description: "One short sentence working through which of the update rules below applies, before answering.",
-        },
-        state: {
-            type: "string",
-            description: "The full new state of this slot after applying the message. Comma-separated list of items if multiple. Use \"none\" if nothing is worn in this slot.",
-        },
-    },
-    required: ["reasoning", "state"],
-    additionalProperties: false,
-};
-
-function buildDefaultClothingDiffPrompt(message) {
-    const exampleShape = JSON.stringify({
-        reasoning: "...",
-        ...Object.fromEntries(CLOTHING_SLOTS.map((slot) => [slot, false])),
-    });
-
-    return `Analyze ONLY the message below (not prior context). For each clothing
+// Per-area config for the generic diff -> per-slot-update pipeline. Clothes'
+// own prompt *wording* below is copied verbatim from the original
+// clothing-only implementation (issue #2) and must stay byte-for-byte
+// identical - only the mechanical scaffolding around it (this config table,
+// the generic builders below) is new. See CLAUDE.md: extraction-prompt
+// wording is empirically tuned per user/model and requires sign-off before
+// changing, so don't "clean up" Clothes' text even if it looks inconsistent
+// with the newer areas' leaner style.
+const AREA_SLOT_CONFIGS = {
+    clothes: {
+        id: "clothes",
+        label: "Clothes",
+        icon: "fa-shirt",
+        slots: CLOTHING_SLOTS,
+        triggerMode: "target",
+        seedField: "target",
+        diffIntroParagraph: `Analyze ONLY the message below (not prior context). For each clothing
 slot, determine whether the message contains any information about it.
 Slots represent where clothing is worn, not specifically a category.
-Important: Legwear covers the leg above the ankle, Footwear the foot.
-
-If you find any change for a slot, mark it true. When there is no
-change about the slot, mark it false.
-
-Reasoning is just for debug, so one concise sentence is enough.
-
-Message:
-"""
-${message}
-"""
-
-Respond with ONLY a JSON object (no markdown code fence). Fill in
-"reasoning" first, then the 8 booleans, using exactly this shape:
-${exampleShape}`;
-}
-
-function buildClothingSlotUpdatePrompt(slot, currentState, message) {
-    return `Clothing slot "${slot}" (where clothing is worn, not a category).
-
-Current state of ${slot}: "${currentState}"
-
-Message: "${message}"
-
-Update the ${slot} state based on this message.
-- If a new item is added as a layer (e.g. a coat over a blouse), keep the
+Important: Legwear covers the leg above the ankle, Footwear the foot.`,
+        diffTrueFalseLine: `If you find any change for a slot, mark it true. When there is no
+change about the slot, mark it false.`,
+        diffReasoningDescription: "One short clause per clothing category (top, bottom, underwear, legwear, footwear, accessories, hair, makeup, in that order), noting whether the message explicitly touches on it and why.",
+        slotDescriptions: {
+            top: "True if the message contains any explicit info about tops (shirts, jackets, coats, etc.) — new item, layering, removal, or state/damage change.",
+            bottom: "True if the message mentions pants, skirts, shorts, a dress's lower half, etc. — same criteria as top.",
+            underwear: "True if bra, panties, boxers, etc. are mentioned or implied to change.",
+            legwear: "True if stockings, tights, socks, garters are mentioned or changed.",
+            footwear: "True if shoes, boots, heels are mentioned, put on, or removed.",
+            accessories: "True if jewelry, glasses, hats, belts, or similar are mentioned or changed.",
+            hair: "True if hairstyle is described, mentioned, or changed (not just touched/moved).",
+            makeup: "True if makeup is applied, described, smeared, or removed.",
+        },
+        slotLabel: (slot) => `Clothing slot "${slot}" (where clothing is worn, not a category).`,
+        updateRules: `- If a new item is added as a layer (e.g. a coat over a blouse), keep the
   existing item(s) and add the new one.
 - If a new item explicitly replaces the existing one (e.g. "changes into a
   dress"), output only the new item(s).
@@ -102,15 +67,227 @@ Update the ${slot} state based on this message.
   in parentheses (max ~5 words), e.g. "white blouse (coffee stain)".
 - If an item is explicitly removed and nothing replaces it, output "none".
 - If nothing actually changed despite the trigger, return the state unchanged.
-- Do not invent details that were not stated in the message.
+- Do not invent details that were not stated in the message.`,
+        updateHint: (slot) => `Hint: There are multiple slots - you only have to concentrate on ${slot} though. Legwear covers the leg above the ankle, Footwear the foot. An accessory typically refers to an item worn to complement or enhance a garment or appearance.`,
+        slotUpdateStateDescription: "The full new state of this slot after applying the message. Comma-separated list of items if multiple. Use \"none\" if nothing is worn in this slot.",
+        slotDefaultSentinel: () => "none",
+        gateDescription: "True if the message contains information about what a character is wearing, or a change to it.",
+    },
+    physicalState: {
+        id: "physical_state",
+        label: "Physical State",
+        icon: "fa-heart-pulse",
+        slots: PHYSICAL_STATE_SLOTS,
+        triggerMode: "always",
+        seedField: "target",
+        diffIntroParagraph: `For each physical condition slot, determine whether the message below
+contains any information about it. Slots represent a distinct aspect of
+physical or momentary condition, not a diagnosis.`,
+        diffTrueFalseLine: "If you find any information for a slot, mark it true. Otherwise mark it false.",
+        diffReasoningDescription: "One short clause per physical condition slot (build, health, marks, restraints, mood, in that order), noting whether the message contains information about it and why.",
+        slotDescriptions: {
+            build: "True if the message contains information about bodyweight or physical build.",
+            health: "True if the message contains information about illness, exhaustion, hunger, thirst, intoxication, or injury status.",
+            marks: "True if the message contains information about visible marks on the skin.",
+            restraints: "True if the message contains information about physical restraint, or the removal of one.",
+            mood: "True if the message contains information about the character's current momentary emotional or mental condition, as distinct from long-term psychological state.",
+        },
+        slotLabel: (slot) => `Physical condition slot "${slot}".`,
+        updateRules: `- If the message adds new information, incorporate it into the existing state.
+- If the message explicitly resolves or ends the condition, output "none".
+- If nothing actually changed despite the trigger, return the state unchanged.
+- Do not invent details that were not stated in the message.`,
+        slotUpdateStateDescription: "The new value of this slot after applying the update rules above.",
+        slotDefaultSentinel: (slot) => (slot === "build" || slot === "mood" ? "unknown" : "none"),
+        gateDescription: "True if the message contains information about a character's physical or momentary bodily condition.",
+    },
+    stateOfMind: {
+        id: "state_of_mind",
+        label: "State of Mind",
+        icon: "fa-brain",
+        slots: STATE_OF_MIND_SLOTS,
+        triggerMode: "target",
+        seedField: "target",
+        diffIntroParagraph: `For each mind-state slot, determine whether the message below reveals
+any new, lasting psychological information about it. Slots track
+persistent psychological changes, not momentary mood or behavior.`,
+        diffTrueFalseLine: "If you find any information for a slot, mark it true. Otherwise mark it false.",
+        diffReasoningDescription: "One short clause per mind-state slot (beliefs, trauma, conditioning, triggers, alters, influences, in that order), noting whether the message reveals information about it and why.",
+        slotDescriptions: {
+            beliefs: "True if the message reveals something the character has come to believe or feel about themself as a person.",
+            trauma: "True if the message reveals a specific past event that left a lasting emotional wound.",
+            conditioning: "True if the message reveals a trained behavioral pattern or association built up over time, not tied to a single event.",
+            triggers: "True if the message reveals a specific stimulus that provokes a near-involuntary reaction.",
+            alters: "True if the message reveals a distinct alternate personality or identity.",
+            influences: "True if the message reveals a temporary external factor currently affecting the character's psychological state.",
+        },
+        slotLabel: (slot) => `Mind-state slot "${slot}" (a persistent psychological record, not a momentary state).`,
+        updateRules: `- Keep every existing entry unless the message explicitly contradicts or resolves it.
+- If the message establishes a new entry, append it to the existing entries, separated by "; ".
+- If nothing actually new or changed, return the entries unchanged.
+- Do not invent entries that were not explicitly established.
+- Use "none" only if there are no entries at all.`,
+        slotUpdateStateDescription: "The full new value of this slot after applying the update rules above.",
+        slotDefaultSentinel: () => "none",
+        gateDescription: "True if the message reveals lasting psychological information about a character.",
+    },
+    situational: {
+        id: "situational",
+        label: "Situational",
+        icon: "fa-location-dot",
+        slots: SITUATIONAL_SLOTS,
+        triggerMode: "always",
+        seedField: "scenario",
+        diffIntroParagraph: `For each situational slot, determine whether the message below
+contains any information about it. Slots describe the physical scene
+the characters are currently in, not their actions or dialogue.`,
+        diffTrueFalseLine: "If you find any information for a slot, mark it true. Otherwise mark it false.",
+        diffReasoningDescription: "One short clause per situational slot (location, features, timeOfDay, weather, privacyRisk, ambient, in that order), noting whether the message contains information about it and why.",
+        slotDescriptions: {
+            location: "True if the message states or changes the current physical location.",
+            features: "True if the message mentions a notable object, piece of furniture, exit, or hazard in the environment.",
+            timeOfDay: "True if the message explicitly states or unambiguously implies the time of day.",
+            weather: "True if the message explicitly states weather that is relevant to the scene.",
+            privacyRisk: "True if the message establishes or changes whether the characters are alone, in public, or at risk of interruption.",
+            ambient: "True if the message mentions a notable sound, smell, lighting condition, or atmosphere.",
+        },
+        slotLabel: (slot) => `Situational slot "${slot}" (the physical scene, not characters or events).`,
+        updateRules: `- If the message establishes new information, incorporate it into the state.
+- If the message explicitly changes this aspect of the scene, replace the state with the new value.
+- If nothing actually changed despite the trigger, return the state unchanged.
+- Do not invent or infer details that were not explicitly stated.`,
+        slotUpdateStateDescription: "The new value of this slot after applying the update rules above.",
+        slotDefaultSentinel: (slot) => {
+            if (slot === "timeOfDay" || slot === "weather") return "not established";
+            if (slot === "privacyRisk") return "unknown";
+            if (slot === "location") return "unknown";
+            return "none";
+        },
+        gateDescription: "True if the message contains information about the physical scene or environment.",
+    },
+    expectations: {
+        id: "expectations",
+        label: "Expectations",
+        icon: "fa-list-check",
+        slots: EXPECTATIONS_SLOTS,
+        triggerMode: "target",
+        seedField: "target",
+        diffIntroParagraph: `For each expectations slot, determine whether the message below
+establishes any information about it. Slots track explicit rules or
+expectations placed on the tracked character, not descriptions of
+their actions.`,
+        diffTrueFalseLine: "If you find any information for a slot, mark it true. Otherwise mark it false.",
+        diffReasoningDescription: "One short clause noting whether the message establishes an explicit rule or expectation, and why.",
+        slotDescriptions: {
+            rules: "True if the message establishes an explicit rule or expectation placed on the tracked character, whether stated by themself or by someone else.",
+        },
+        slotLabel: (slot) => `Expectations slot "${slot}" (explicit rules established in the story).`,
+        updateRules: `- Keep every existing entry unchanged.
+- If the message establishes a new rule, append it to the existing entries, separated by "; ".
+- If nothing actually new was established, return the entries unchanged.
+- Do not invent or infer a rule that was not explicitly stated.
+- Use "none" only if there are no entries at all.`,
+        slotUpdateStateDescription: "The full new value of this slot after applying the update rules above.",
+        slotDefaultSentinel: () => "none",
+        gateDescription: "True if the message establishes an explicit rule or expectation placed on a character.",
+    },
+};
 
-Hint: There are multiple slots - you only have to concentrate on ${slot} though. Legwear covers the leg above the ankle, Footwear the foot. An accessory typically refers to an item worn to complement or enhance a garment or appearance.
+function buildAreaDiffPrompt(config, message) {
+    const exampleShape = JSON.stringify({
+        reasoning: "...",
+        ...Object.fromEntries(config.slots.map((slot) => [slot, false])),
+    });
+    const countPhrase = config.slots.length === 1 ? "the boolean" : `the ${config.slots.length} booleans`;
 
-Reasoning is just for debug, so one concise sentence is enough.
+    return [
+        config.diffIntroParagraph,
+        config.diffTrueFalseLine,
+        "Reasoning is just for debug, so one concise sentence is enough.",
+        `Message:\n"""\n${message}\n"""`,
+        `Respond with ONLY a JSON object (no markdown code fence). Fill in\n"reasoning" first, then ${countPhrase}, using exactly this shape:\n${exampleShape}`,
+    ].join("\n\n");
+}
 
-Respond with ONLY a JSON object (no markdown code fence). Fill in
-"reasoning" first, then "state", using exactly this shape:
-{"reasoning": "...", "state": "..."}.`;
+function buildAreaDiffSchema(config) {
+    const properties = {
+        reasoning: { type: "string", description: config.diffReasoningDescription },
+    };
+    for (const slot of config.slots) {
+        properties[slot] = { type: "boolean", description: config.slotDescriptions[slot] };
+    }
+    return {
+        type: "object",
+        properties,
+        required: ["reasoning", ...config.slots],
+        additionalProperties: false,
+    };
+}
+
+function buildAreaSlotUpdatePrompt(config, slot, currentState, message) {
+    const blocks = [
+        config.slotLabel(slot),
+        `Current state of ${slot}: "${currentState}"`,
+        `Message: "${message}"`,
+        `Update the ${slot} state based on this message.\n${config.updateRules}`,
+    ];
+    if (config.updateHint) {
+        blocks.push(config.updateHint(slot));
+    }
+    blocks.push(
+        "Reasoning is just for debug, so one concise sentence is enough.",
+        "Respond with ONLY a JSON object (no markdown code fence). Fill in\n\"reasoning\" first, then \"state\", using exactly this shape:\n{\"reasoning\": \"...\", \"state\": \"...\"}.",
+    );
+    return blocks.join("\n\n");
+}
+
+function buildAreaSlotUpdateSchema(config) {
+    return {
+        type: "object",
+        properties: {
+            reasoning: {
+                type: "string",
+                description: "One short sentence working through which of the update rules below applies, before answering.",
+            },
+            state: { type: "string", description: config.slotUpdateStateDescription },
+        },
+        required: ["reasoning", "state"],
+        additionalProperties: false,
+    };
+}
+
+function buildAreaGatePrompt(eligibleAreaKeys, message) {
+    const exampleShape = JSON.stringify({
+        reasoning: "...",
+        ...Object.fromEntries(eligibleAreaKeys.map((key) => [key, false])),
+    });
+    const countPhrase = eligibleAreaKeys.length === 1 ? "the boolean" : `the ${eligibleAreaKeys.length} booleans`;
+
+    return [
+        "For each area below, determine whether the message contains any\ninformation relevant to it.",
+        "If you find any information relevant to an area, mark it true.\nOtherwise mark it false.",
+        "Reasoning is just for debug, so one concise sentence is enough.",
+        `Message:\n"""\n${message}\n"""`,
+        `Respond with ONLY a JSON object (no markdown code fence). Fill in\n"reasoning" first, then ${countPhrase}, using exactly this shape:\n${exampleShape}`,
+    ].join("\n\n");
+}
+
+function buildAreaGateSchema(eligibleAreaKeys) {
+    const properties = {
+        reasoning: {
+            type: "string",
+            description: "One short clause per area, in order, noting whether the message contains information relevant to it and why.",
+        },
+    };
+    for (const key of eligibleAreaKeys) {
+        properties[key] = { type: "boolean", description: AREA_SLOT_CONFIGS[key].gateDescription };
+    }
+    return {
+        type: "object",
+        properties,
+        required: ["reasoning", ...eligibleAreaKeys],
+        additionalProperties: false,
+    };
 }
 
 const defaultSettings = {
@@ -123,13 +300,32 @@ const defaultSettings = {
         recallEnabled: false,
     },
     state: {
-        target: "char",
         areas: Object.fromEntries(
-            STATE_AREAS.map(({ key }) => [key, { useDefaultPrompt: true, customPrompt: "" }]),
+            STATE_AREAS.map(({ key }) => [key, { useDefaultPrompt: true, customPrompt: "", enabled: true }]),
         ),
     },
 };
-defaultSettings.state.areas.clothes.slots = Object.fromEntries(CLOTHING_SLOTS.map((slot) => [slot, ""]));
+
+// Which side of the conversation "Applies to" tracks — char or user —
+// varies by chat/scenario (sometimes the game drives the user, sometimes
+// the user drives the game), so it belongs in chat_metadata alongside the
+// slot values, not in the global settings.
+const DEFAULT_TARGET = "char";
+
+// Slot *values* belong to the conversation, not the user profile — they
+// live in chat_metadata (see ensureChatState() below), not in
+// extension_settings. Only the configuration above (enabled, prompts,
+// connection) is a global preference that should apply across every chat.
+// This mirrors how SillyTavern's own Author's Note feature splits its data:
+// global defaults in extension_settings, the actual per-conversation values
+// namespaced under chat_metadata[extensionName] (public/scripts/authors-note.js).
+const DEFAULT_AREA_SLOTS = {
+    clothes: Object.fromEntries(CLOTHING_SLOTS.map((slot) => [slot, ""])),
+    physicalState: Object.fromEntries(PHYSICAL_STATE_SLOTS.map((slot) => [slot, ""])),
+    stateOfMind: Object.fromEntries(STATE_OF_MIND_SLOTS.map((slot) => [slot, ""])),
+    situational: Object.fromEntries(SITUATIONAL_SLOTS.map((slot) => [slot, ""])),
+    expectations: Object.fromEntries(EXPECTATIONS_SLOTS.map((slot) => [slot, ""])),
+};
 
 function ensureSettings() {
     if (!extension_settings[extensionName]) {
@@ -138,20 +334,13 @@ function ensureSettings() {
 
     const settings = extension_settings[extensionName];
     settings.cognee = Object.assign(structuredClone(defaultSettings.cognee), settings.cognee);
-    settings.state = Object.assign({ target: defaultSettings.state.target }, settings.state);
+    settings.state = settings.state || {};
     settings.state.areas = settings.state.areas || {};
     for (const { key } of STATE_AREAS) {
-        const area = Object.assign(
+        settings.state.areas[key] = Object.assign(
             structuredClone(defaultSettings.state.areas[key]),
             settings.state.areas[key],
         );
-        if (key === "clothes") {
-            area.slots = Object.assign(
-                structuredClone(defaultSettings.state.areas.clothes.slots),
-                settings.state.areas.clothes?.slots,
-            );
-        }
-        settings.state.areas[key] = area;
     }
     if (settings.enabled === undefined) {
         settings.enabled = defaultSettings.enabled;
@@ -161,6 +350,29 @@ function ensureSettings() {
     }
 
     return settings;
+}
+
+// Per-chat slot state, namespaced under chat_metadata[extensionName] so it
+// travels with the chat file (saved/loaded/exported with the chat) instead
+// of leaking between conversations. Always call getContext() fresh here —
+// chat_metadata is reassigned wholesale on chat switch/reset, so a cached
+// reference would silently point at a stale, orphaned object.
+function ensureChatState() {
+    const chatMetadata = getContext().chatMetadata;
+    if (!chatMetadata[extensionName]) {
+        chatMetadata[extensionName] = {};
+    }
+
+    const chatState = chatMetadata[extensionName];
+    chatState.target = chatState.target || DEFAULT_TARGET;
+    chatState.areas = chatState.areas || {};
+    for (const { key } of STATE_AREAS) {
+        const area = chatState.areas[key] || {};
+        area.slots = Object.assign(structuredClone(DEFAULT_AREA_SLOTS[key]), area.slots);
+        chatState.areas[key] = area;
+    }
+
+    return chatState;
 }
 
 function populateConnectionProfiles() {
@@ -186,16 +398,30 @@ function renderSettings() {
     $("#psychograph_cognee_enabled").prop("checked", settings.cognee.enabled);
     $("#psychograph_cognee_recall_enabled").prop("checked", settings.cognee.recallEnabled);
     renderCogneeChatSection();
-    $("#psychograph_state_target").val(settings.state.target);
 
     for (const { key, id } of STATE_AREAS) {
         const area = settings.state.areas[key];
+        $(`#psychograph_state_${id}_enabled`).prop("checked", area.enabled);
         $(`#psychograph_state_${id}_default_prompt`).prop("checked", area.useDefaultPrompt);
         $(`#psychograph_state_${id}_custom_prompt`).val(area.customPrompt).prop("hidden", area.useDefaultPrompt);
     }
 
-    for (const slot of CLOTHING_SLOTS) {
-        $(`#psychograph_state_clothes_slot_${slot}`).val(settings.state.areas.clothes.slots[slot]);
+    renderChatState();
+}
+
+// Reflects the CURRENT chat's state (target + slots), so this runs both on
+// initial load and on CHAT_CHANGED (see bindChatEvents) — otherwise the
+// panel would keep showing whatever chat was open when the extension
+// first loaded.
+function renderChatState() {
+    const chatState = ensureChatState();
+    $("#psychograph_state_target").val(chatState.target);
+
+    for (const { key, id } of STATE_AREAS) {
+        const slots = chatState.areas[key].slots;
+        for (const slot of AREA_SLOT_CONFIGS[key].slots) {
+            $(`#psychograph_state_${id}_slot_${slot}`).val(slots[slot]);
+        }
     }
 }
 
@@ -256,11 +482,16 @@ function bindSettingsEvents() {
     $("#psychograph_cognee_backfill").on("click", backfillChatHistoryToCognee);
 
     $("#psychograph_state_target").on("change", function () {
-        ensureSettings().state.target = String($(this).val());
-        saveSettingsDebounced();
+        ensureChatState().target = String($(this).val());
+        getContext().saveMetadataDebounced();
     });
 
     for (const { key, id } of STATE_AREAS) {
+        $(`#psychograph_state_${id}_enabled`).on("change", function () {
+            ensureSettings().state.areas[key].enabled = $(this).prop("checked");
+            saveSettingsDebounced();
+        });
+
         $(`#psychograph_state_${id}_default_prompt`).on("change", function () {
             const useDefaultPrompt = $(this).prop("checked");
             ensureSettings().state.areas[key].useDefaultPrompt = useDefaultPrompt;
@@ -272,13 +503,13 @@ function bindSettingsEvents() {
             ensureSettings().state.areas[key].customPrompt = String($(this).val());
             saveSettingsDebounced();
         });
-    }
 
-    for (const slot of CLOTHING_SLOTS) {
-        $(`#psychograph_state_clothes_slot_${slot}`).on("input", function () {
-            ensureSettings().state.areas.clothes.slots[slot] = String($(this).val());
-            saveSettingsDebounced();
-        });
+        for (const slot of AREA_SLOT_CONFIGS[key].slots) {
+            $(`#psychograph_state_${id}_slot_${slot}`).on("input", function () {
+                ensureChatState().areas[key].slots[slot] = String($(this).val());
+                getContext().saveMetadataDebounced();
+            });
+        }
     }
 
     eventSource.on(event_types.CONNECTION_PROFILE_CREATED, populateConnectionProfiles);
@@ -317,54 +548,76 @@ async function sendJsonSchemaRequest(profileId, schemaName, schema, prompt, maxT
     return parseJsonResponse(response.content);
 }
 
-async function runClothingExtraction(message) {
+async function runAreaGate(profileId, eligibleAreaKeys, message) {
+    if (eligibleAreaKeys.length === 0) {
+        return [];
+    }
+
+    const prompt = buildAreaGatePrompt(eligibleAreaKeys, message);
+    const schema = buildAreaGateSchema(eligibleAreaKeys);
+
+    try {
+        const gate = await sendJsonSchemaRequest(profileId, "area_gate", schema, prompt, AREA_GATE_MAX_TOKENS);
+        console.log("[Psychograph] Area gate reasoning:", gate.reasoning);
+        return eligibleAreaKeys.filter((key) => gate[key] === true);
+    } catch (error) {
+        console.error("[Psychograph] Area gate call failed, running all eligible areas instead:", error);
+        return eligibleAreaKeys;
+    }
+}
+
+async function runAreaExtraction(areaKey, message) {
     const settings = ensureSettings();
     const profileId = settings.connectionProfile;
     if (!profileId) {
-        console.warn("[Psychograph] Clothing extraction: no connection profile configured, skipping.");
+        console.warn(`[Psychograph] ${areaKey} extraction: no connection profile configured, skipping.`);
         return;
     }
 
-    const clothesArea = settings.state.areas.clothes;
-    const diffPrompt = clothesArea.useDefaultPrompt
-        ? buildDefaultClothingDiffPrompt(message)
-        : clothesArea.customPrompt.replaceAll("{{message}}", message);
+    const config = AREA_SLOT_CONFIGS[areaKey];
+    const areaSettings = settings.state.areas[areaKey];
+    const area = ensureChatState().areas[areaKey];
+    const diffPrompt = areaSettings.useDefaultPrompt
+        ? buildAreaDiffPrompt(config, message)
+        : areaSettings.customPrompt.replaceAll("{{message}}", message);
+    const diffSchema = buildAreaDiffSchema(config);
 
     let diff;
     try {
-        diff = await sendJsonSchemaRequest(profileId, "clothing_diff", CLOTHING_DIFF_SCHEMA, diffPrompt, CLOTHING_DIFF_MAX_TOKENS);
-        console.log("[Psychograph] Clothing diff reasoning:", diff.reasoning);
+        diff = await sendJsonSchemaRequest(profileId, `${areaKey}_diff`, diffSchema, diffPrompt, AREA_DIFF_MAX_TOKENS);
+        console.log(`[Psychograph] ${config.label} diff reasoning:`, diff.reasoning);
     } catch (error) {
-        console.error("[Psychograph] Clothing diff call failed:", error);
+        console.error(`[Psychograph] ${config.label} diff call failed:`, error);
         return;
     }
 
-    const changedSlots = CLOTHING_SLOTS.filter((slot) => diff[slot] === true);
+    const changedSlots = config.slots.filter((slot) => diff[slot] === true);
     if (changedSlots.length === 0) {
         return;
     }
 
+    const slotUpdateSchema = buildAreaSlotUpdateSchema(config);
     await Promise.all(changedSlots.map(async (slot) => {
-        const currentState = clothesArea.slots[slot] || "none";
-        const updatePrompt = buildClothingSlotUpdatePrompt(slot, currentState, message);
+        const currentState = area.slots[slot] || config.slotDefaultSentinel(slot);
+        const updatePrompt = buildAreaSlotUpdatePrompt(config, slot, currentState, message);
 
         try {
             const update = await sendJsonSchemaRequest(
                 profileId,
-                "clothing_slot_update",
-                CLOTHING_SLOT_UPDATE_SCHEMA,
+                `${areaKey}_slot_update`,
+                slotUpdateSchema,
                 updatePrompt,
-                CLOTHING_SLOT_UPDATE_MAX_TOKENS,
+                AREA_SLOT_UPDATE_MAX_TOKENS,
             );
-            console.log(`[Psychograph] Clothing update reasoning for "${slot}":`, update.reasoning);
-            clothesArea.slots[slot] = update.state;
-            $(`#psychograph_state_clothes_slot_${slot}`).val(update.state);
+            console.log(`[Psychograph] ${config.label} update reasoning for "${slot}":`, update.reasoning);
+            area.slots[slot] = update.state;
+            $(`#psychograph_state_${config.id}_slot_${slot}`).val(update.state);
         } catch (error) {
-            console.error(`[Psychograph] Clothing update call failed for slot "${slot}":`, error);
+            console.error(`[Psychograph] ${config.label} update call failed for slot "${slot}":`, error);
         }
     }));
 
-    saveSettingsDebounced();
+    getContext().saveMetadataDebounced();
 }
 
 const COGNEE_METADATA_KEY = "stPsychograph";
@@ -599,8 +852,15 @@ async function flushCogneeRecallInject() {
     await getContext().executeSlashCommandsWithOptions(`/flushinject ${COGNEE_RECALL_INJECT_ID} |`);
 }
 
-function isClothingTriggerRelevant(eventType) {
-    const target = ensureSettings().state.target;
+function isAreaTriggerRelevant(areaKey, eventType) {
+    const config = AREA_SLOT_CONFIGS[areaKey];
+    if (config.triggerMode === "always") {
+        return eventType === event_types.MESSAGE_SENT
+            || eventType === event_types.MESSAGE_RECEIVED
+            || eventType === event_types.MESSAGE_SWIPED;
+    }
+
+    const target = ensureChatState().target;
     if (target === "char") {
         return eventType === event_types.MESSAGE_RECEIVED || eventType === event_types.MESSAGE_SWIPED;
     }
@@ -610,7 +870,19 @@ function isClothingTriggerRelevant(eventType) {
 function handleChatMessageEvent(eventType) {
     return async function () {
         const settings = ensureSettings();
-        if (!settings.enabled || !isClothingTriggerRelevant(eventType)) {
+        if (!settings.enabled) {
+            return;
+        }
+
+        const eligibleAreaKeys = Object.keys(AREA_SLOT_CONFIGS).filter((key) =>
+            settings.state.areas[key].enabled && isAreaTriggerRelevant(key, eventType));
+        if (eligibleAreaKeys.length === 0) {
+            return;
+        }
+
+        const profileId = settings.connectionProfile;
+        if (!profileId) {
+            console.warn("[Psychograph] Area gate: no connection profile configured, skipping.");
             return;
         }
 
@@ -620,7 +892,8 @@ function handleChatMessageEvent(eventType) {
             return;
         }
 
-        await runClothingExtraction(lastMessage.mes);
+        const gatedAreaKeys = await runAreaGate(profileId, eligibleAreaKeys, lastMessage.mes);
+        await Promise.all(gatedAreaKeys.map((areaKey) => runAreaExtraction(areaKey, lastMessage.mes)));
     };
 }
 
@@ -639,6 +912,10 @@ function bindChatEvents() {
 
     eventSource.on(event_types.GENERATION_AFTER_COMMANDS, handleCogneeRecall);
     eventSource.on(event_types.GENERATION_ENDED, flushCogneeRecallInject);
+
+    // Slot inputs show the current chat's state — without this they'd keep
+    // displaying whatever chat was open when the panel was last rendered.
+    eventSource.on(event_types.CHAT_CHANGED, renderChatState);
 }
 
 const GUIDED_INJECT_ID = "psychograph_guide";
@@ -718,7 +995,7 @@ async function guidedContinue() {
     });
 }
 
-async function rerunClothingExtractionNow() {
+async function rerunAreaExtractionNow(areaKey) {
     const chat = getContext().chat;
     const lastMessage = chat[chat.length - 1];
     if (!lastMessage) {
@@ -726,28 +1003,34 @@ async function rerunClothingExtractionNow() {
         return;
     }
 
-    toastr.info("Analyzing clothing for the last message…", "Psychograph");
-    await runClothingExtraction(lastMessage.mes);
+    const config = AREA_SLOT_CONFIGS[areaKey];
+    toastr.info(`Analyzing ${config.label.toLowerCase()} for the last message…`, "Psychograph");
+    await runAreaExtraction(areaKey, lastMessage.mes);
 }
 
-async function initClothesFromDescription() {
-    const settings = ensureSettings();
-    const target = settings.state.target;
-
+async function initAreaFromDescription(areaKey) {
+    const config = AREA_SLOT_CONFIGS[areaKey];
     const context = getContext();
     const fields = context.getCharacterCardFields();
-    const description = target === "user" ? fields.persona : fields.description;
 
-    if (!description || !description.trim()) {
-        toastr.warning(
-            target === "user" ? "No persona description found." : "No character description found.",
-            "Psychograph",
-        );
+    let seedText;
+    let missingLabel;
+    if (config.seedField === "scenario") {
+        seedText = fields.scenario;
+        missingLabel = "No scenario found.";
+    } else {
+        const target = ensureChatState().target;
+        seedText = target === "user" ? fields.persona : fields.description;
+        missingLabel = target === "user" ? "No persona description found." : "No character description found.";
+    }
+
+    if (!seedText || !seedText.trim()) {
+        toastr.warning(missingLabel, "Psychograph");
         return;
     }
 
-    toastr.info("Initializing clothing state from description…", "Psychograph");
-    await runClothingExtraction(description);
+    toastr.info(`Initializing ${config.label.toLowerCase()} from description…`, "Psychograph");
+    await runAreaExtraction(areaKey, seedText);
 }
 
 function togglePsychographSubmenu(anchorElement) {
@@ -774,6 +1057,39 @@ function togglePsychographSubmenu(anchorElement) {
         left: `${rect.left + window.scrollX}px`,
     });
     submenu.addClass("shown");
+}
+
+function buildAreaSubmenuHtml() {
+    return STATE_AREAS.map(({ key }) => {
+        const config = AREA_SLOT_CONFIGS[key];
+        return `
+            <div class="psychograph-menu-divider">${config.label}</div>
+            <div id="psychograph_action_init_${config.id}" class="list-group-item">
+                <div class="fa-solid fa-bolt extensionsMenuExtensionButton"></div>
+                <span>Init ${config.label}</span>
+            </div>
+            <div id="psychograph_action_${config.id}" class="list-group-item">
+                <div class="fa-solid ${config.icon} extensionsMenuExtensionButton"></div>
+                <span>${config.label}</span>
+            </div>
+        `;
+    }).join("");
+}
+
+function bindAreaSubmenuEvents() {
+    for (const { key } of STATE_AREAS) {
+        const config = AREA_SLOT_CONFIGS[key];
+
+        $(`#psychograph_action_${config.id}`).on("click", async function () {
+            $("#psychograph_submenu").removeClass("shown");
+            await rerunAreaExtractionNow(key);
+        });
+
+        $(`#psychograph_action_init_${config.id}`).on("click", async function () {
+            $("#psychograph_submenu").removeClass("shown");
+            await initAreaFromDescription(key);
+        });
+    }
 }
 
 function buildToolbarButton() {
@@ -814,14 +1130,7 @@ function buildToolbarButton() {
 
     $("body").append(`
         <div id="psychograph_submenu" class="psychograph-tools-menu">
-            <div id="psychograph_action_clothes" class="list-group-item">
-                <div class="fa-solid fa-shirt extensionsMenuExtensionButton"></div>
-                <span>Clothes</span>
-            </div>
-            <div id="psychograph_action_init_clothes" class="list-group-item">
-                <div class="fa-solid fa-bolt extensionsMenuExtensionButton"></div>
-                <span>Init Clothes</span>
-            </div>
+            ${buildAreaSubmenuHtml()}
         </div>
     `);
 
@@ -838,15 +1147,7 @@ function buildToolbarButton() {
         $("#psychograph_submenu").removeClass("shown");
     });
 
-    $("#psychograph_action_clothes").on("click", async function () {
-        $("#psychograph_submenu").removeClass("shown");
-        await rerunClothingExtractionNow();
-    });
-
-    $("#psychograph_action_init_clothes").on("click", async function () {
-        $("#psychograph_submenu").removeClass("shown");
-        await initClothesFromDescription();
-    });
+    bindAreaSubmenuEvents();
 }
 
 jQuery(async () => {

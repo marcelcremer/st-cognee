@@ -51,6 +51,10 @@
                             <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
                         </div>
                         <div class="inline-drawer-content">
+                            <label class="checkbox_label" for="psychograph_state_clothes_enabled">
+                                <input id="psychograph_state_clothes_enabled" type="checkbox" />
+                                Enabled
+                            </label>
                             <label class="checkbox_label" for="psychograph_state_clothes_default_prompt">
                                 <input id="psychograph_state_clothes_default_prompt" type="checkbox" />
                                 Default prompt
@@ -83,11 +87,27 @@
                             <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
                         </div>
                         <div class="inline-drawer-content">
+                            <label class="checkbox_label" for="psychograph_state_physical_state_enabled">
+                                <input id="psychograph_state_physical_state_enabled" type="checkbox" />
+                                Enabled
+                            </label>
                             <label class="checkbox_label" for="psychograph_state_physical_state_default_prompt">
                                 <input id="psychograph_state_physical_state_default_prompt" type="checkbox" />
                                 Default prompt
                             </label>
                             <textarea id="psychograph_state_physical_state_custom_prompt" class="text_pole textarea_compact" rows="4" placeholder="Custom extraction prompt for this area"></textarea>
+
+                            <label>Current state</label>
+                            <label for="psychograph_state_physical_state_slot_build">Build</label>
+                            <input id="psychograph_state_physical_state_slot_build" type="text" class="text_pole" placeholder="unknown" />
+                            <label for="psychograph_state_physical_state_slot_health">Health</label>
+                            <input id="psychograph_state_physical_state_slot_health" type="text" class="text_pole" placeholder="none" />
+                            <label for="psychograph_state_physical_state_slot_marks">Marks</label>
+                            <input id="psychograph_state_physical_state_slot_marks" type="text" class="text_pole" placeholder="none" />
+                            <label for="psychograph_state_physical_state_slot_restraints">Restraints</label>
+                            <input id="psychograph_state_physical_state_slot_restraints" type="text" class="text_pole" placeholder="none" />
+                            <label for="psychograph_state_physical_state_slot_mood">Mood</label>
+                            <input id="psychograph_state_physical_state_slot_mood" type="text" class="text_pole" placeholder="unknown" />
                         </div>
                     </div>
 
@@ -97,11 +117,29 @@
                             <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
                         </div>
                         <div class="inline-drawer-content">
+                            <label class="checkbox_label" for="psychograph_state_state_of_mind_enabled">
+                                <input id="psychograph_state_state_of_mind_enabled" type="checkbox" />
+                                Enabled
+                            </label>
                             <label class="checkbox_label" for="psychograph_state_state_of_mind_default_prompt">
                                 <input id="psychograph_state_state_of_mind_default_prompt" type="checkbox" />
                                 Default prompt
                             </label>
                             <textarea id="psychograph_state_state_of_mind_custom_prompt" class="text_pole textarea_compact" rows="4" placeholder="Custom extraction prompt for this area"></textarea>
+
+                            <label>Current state</label>
+                            <label for="psychograph_state_state_of_mind_slot_beliefs">Beliefs</label>
+                            <input id="psychograph_state_state_of_mind_slot_beliefs" type="text" class="text_pole" placeholder="none" />
+                            <label for="psychograph_state_state_of_mind_slot_trauma">Trauma</label>
+                            <input id="psychograph_state_state_of_mind_slot_trauma" type="text" class="text_pole" placeholder="none" />
+                            <label for="psychograph_state_state_of_mind_slot_conditioning">Conditioning</label>
+                            <input id="psychograph_state_state_of_mind_slot_conditioning" type="text" class="text_pole" placeholder="none" />
+                            <label for="psychograph_state_state_of_mind_slot_triggers">Triggers</label>
+                            <input id="psychograph_state_state_of_mind_slot_triggers" type="text" class="text_pole" placeholder="none" />
+                            <label for="psychograph_state_state_of_mind_slot_alters">Alters</label>
+                            <input id="psychograph_state_state_of_mind_slot_alters" type="text" class="text_pole" placeholder="none" />
+                            <label for="psychograph_state_state_of_mind_slot_influences">Influences</label>
+                            <input id="psychograph_state_state_of_mind_slot_influences" type="text" class="text_pole" placeholder="none" />
                         </div>
                     </div>
 
@@ -111,11 +149,29 @@
                             <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
                         </div>
                         <div class="inline-drawer-content">
+                            <label class="checkbox_label" for="psychograph_state_situational_enabled">
+                                <input id="psychograph_state_situational_enabled" type="checkbox" />
+                                Enabled
+                            </label>
                             <label class="checkbox_label" for="psychograph_state_situational_default_prompt">
                                 <input id="psychograph_state_situational_default_prompt" type="checkbox" />
                                 Default prompt
                             </label>
                             <textarea id="psychograph_state_situational_custom_prompt" class="text_pole textarea_compact" rows="4" placeholder="Custom extraction prompt for this area"></textarea>
+
+                            <label>Current state</label>
+                            <label for="psychograph_state_situational_slot_location">Location</label>
+                            <input id="psychograph_state_situational_slot_location" type="text" class="text_pole" placeholder="unknown" />
+                            <label for="psychograph_state_situational_slot_features">Features</label>
+                            <input id="psychograph_state_situational_slot_features" type="text" class="text_pole" placeholder="none" />
+                            <label for="psychograph_state_situational_slot_timeOfDay">Time of Day</label>
+                            <input id="psychograph_state_situational_slot_timeOfDay" type="text" class="text_pole" placeholder="not established" />
+                            <label for="psychograph_state_situational_slot_weather">Weather</label>
+                            <input id="psychograph_state_situational_slot_weather" type="text" class="text_pole" placeholder="not established" />
+                            <label for="psychograph_state_situational_slot_privacyRisk">Privacy Risk</label>
+                            <input id="psychograph_state_situational_slot_privacyRisk" type="text" class="text_pole" placeholder="unknown" />
+                            <label for="psychograph_state_situational_slot_ambient">Ambient</label>
+                            <input id="psychograph_state_situational_slot_ambient" type="text" class="text_pole" placeholder="none" />
                         </div>
                     </div>
 
@@ -125,11 +181,19 @@
                             <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
                         </div>
                         <div class="inline-drawer-content">
+                            <label class="checkbox_label" for="psychograph_state_expectations_enabled">
+                                <input id="psychograph_state_expectations_enabled" type="checkbox" />
+                                Enabled
+                            </label>
                             <label class="checkbox_label" for="psychograph_state_expectations_default_prompt">
                                 <input id="psychograph_state_expectations_default_prompt" type="checkbox" />
                                 Default prompt
                             </label>
                             <textarea id="psychograph_state_expectations_custom_prompt" class="text_pole textarea_compact" rows="4" placeholder="Custom extraction prompt for this area"></textarea>
+
+                            <label>Current state</label>
+                            <label for="psychograph_state_expectations_slot_rules">Rules</label>
+                            <input id="psychograph_state_expectations_slot_rules" type="text" class="text_pole" placeholder="none" />
                         </div>
                     </div>
                 </div>
