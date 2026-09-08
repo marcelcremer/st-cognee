@@ -830,19 +830,23 @@ async function handleCogneeRecall(type, _options, dryRun) {
     }
     cogneeRecallInFlight = true;
 
-    // Shows the native Send->Stop button state immediately: the real
-    // generation flow doesn't do this itself until much later (once the
-    // prompt is built and the actual LLM request starts), so without this
-    // the UI looks idle for the whole recall round trip and invites a
-    // second Enter press (which SillyTavern's own is_send_press guard does
-    // not block during this window, since it isn't set until deep inside
-    // Generate() - only the Send button's own click handler is separately
-    // mutex-protected). Disabling the textarea closes that Enter-key gap
-    // directly: a disabled textarea can't receive keyboard focus/events at
-    // all, so it doesn't depend on SillyTavern's internal is_send_press
-    // flag (which isn't exposed to extensions anyway).
+    // Deliberately NOT calling context.deactivateSendButtons()/
+    // activateSendButtons() here (tried it, reverted): activateSendButtons()
+    // calls SillyTavern's hideStopButton(), which - if the stop button is
+    // currently visible - emits GENERATION_ENDED right there. Since
+    // deactivateSendButtons() (called at the top of this function) is what
+    // makes it visible in the first place, calling both back to back around
+    // the recall round trip fires a GENERATION_ENDED before Generate() ever
+    // reaches prompt assembly. Our own GENERATION_ENDED listener
+    // (flushCogneeRecallInject) and the /inject ephemeral=true cleanup hook
+    // both react to that by immediately deleting the extension prompt this
+    // function just set, so the recall text never survives into the actual
+    // prompt. Disabling the textarea below is what actually closes the
+    // double-Enter gap (a disabled textarea can't receive keyboard
+    // focus/events, independent of SillyTavern's internal is_send_press
+    // flag, which isn't exposed to extensions anyway) - the button dance was
+    // a redundant visual nicety not worth this side effect.
     const context = getContext();
-    context.deactivateSendButtons();
     $("#send_textarea").prop("disabled", true);
 
     try {
@@ -863,7 +867,6 @@ async function handleCogneeRecall(type, _options, dryRun) {
         console.error("[Psychograph] Cognee recall failed:", error);
     } finally {
         cogneeRecallInFlight = false;
-        context.activateSendButtons();
         $("#send_textarea").prop("disabled", false);
     }
 }
