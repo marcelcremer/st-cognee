@@ -757,10 +757,6 @@ function buildCogneeRecallQuery(userName, charName) {
     return `This is an ongoing roleplay between ${userName} and ${charName}. Retrieve everything you know that is relevant for playing ${charName}'s next turn as realistically and consistently as possible — established relationships, unresolved plot threads, recent events, and ${charName}'s own goals, emotional state, and knowledge at this point in the story.`;
 }
 
-function buildCogneeRecallSystemPrompt(charName) {
-    return `You are supporting an ongoing roleplay. Answer only with concrete facts and reminders that keep ${charName}'s next turn realistic and in-character — established relationships, unresolved threads, recent events, ${charName}'s goals and emotional state. Do not restate anything ${charName} would already obviously know or that's already common ground in the story — only surface what's actually useful to be reminded of. 2-4 short bullet points. Omit anything speculative or not actually grounded in what happened.`;
-}
-
 async function recallFromCognee(chatCogneeId) {
     const settings = ensureSettings();
     const context = getContext();
@@ -770,13 +766,20 @@ async function recallFromCognee(chatCogneeId) {
         headers: { "X-Api-Key": settings.cognee.apiKey, "Content-Type": "application/json" },
         body: JSON.stringify({
             query: buildCogneeRecallQuery(context.name1, context.name2),
-            system_prompt: buildCogneeRecallSystemPrompt(context.name2),
             datasets: [`psychograph-chat-${chatCogneeId}`],
             // scope: ["session", "graph"] was tried to also surface messages
             // not yet bridged into the graph, but session-scope entries
-            // bypass system_prompt below and blew up recall into raw prose.
+            // bypassed the completion system prompt and blew up recall into
+            // raw prose (this was before the only_context switch below).
             scope: "graph",
             search_type: "GRAPH_COMPLETION",
+            // Skip Cognee's own completion LLM call — we get the raw retrieval
+            // context instead of an already-synthesized answer, and let the
+            // main roleplay generation (which has the full State/Core Memory/
+            // recent-message context Cognee doesn't) do that synthesis once,
+            // instead of twice.
+            only_context: true,
+            context_format: "context",
         }),
     });
 
@@ -789,7 +792,7 @@ async function recallFromCognee(chatCogneeId) {
 }
 
 const COGNEE_RECALL_INJECT_ID = "psychograph_cognee_recall";
-const COGNEE_RECALL_HEADING = "### Long-term context";
+const COGNEE_RECALL_HEADING = "## Facts from long-term memory";
 
 // Hooked on GENERATION_AFTER_COMMANDS (awaited by SillyTavern) so this
 // network round trip lands in the same turn rather than the next one.
