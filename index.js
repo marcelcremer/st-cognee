@@ -489,6 +489,22 @@ function bindSettingsEvents() {
 
     $("#psychograph_cognee_backfill").on("click", backfillChatHistoryToCognee);
 
+    $("#psychograph_cognee_backfill_reset").on("click", async function () {
+        if (cogneeBackfillRunning) {
+            return;
+        }
+        const context = getContext();
+        const confirmed = await context.callGenericPopup(
+            "Mark this chat's full history as not backfilled? This doesn't delete anything already sent to Cognee — it just makes the next backfill run resend everything from the start instead of resuming.",
+            context.POPUP_TYPE.CONFIRM,
+        );
+        if (confirmed !== context.POPUP_RESULT.AFFIRMATIVE) {
+            return;
+        }
+        writeCogneeBackfilledCount(0);
+        renderCogneeChatSection();
+    });
+
     $("#psychograph_state_target").on("change", function () {
         ensureChatState().target = String($(this).val());
         getContext().saveMetadataDebounced();
