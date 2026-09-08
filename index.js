@@ -297,7 +297,6 @@ const defaultSettings = {
         baseUrl: "",
         apiKey: "",
         enabled: false,
-        recallEnabled: false,
         searchType: "GRAPH_COMPLETION",
     },
     state: {
@@ -397,7 +396,6 @@ function renderSettings() {
     $("#psychograph_cognee_base_url").val(settings.cognee.baseUrl);
     $("#psychograph_cognee_api_key").val(settings.cognee.apiKey);
     $("#psychograph_cognee_enabled").prop("checked", settings.cognee.enabled);
-    $("#psychograph_cognee_recall_enabled").prop("checked", settings.cognee.recallEnabled);
     $("#psychograph_cognee_search_type").val(settings.cognee.searchType);
     renderCogneeChatSection();
 
@@ -450,11 +448,6 @@ function bindSettingsEvents() {
 
     $("#psychograph_cognee_enabled").on("change", function () {
         ensureSettings().cognee.enabled = $(this).prop("checked");
-        saveSettingsDebounced();
-    });
-
-    $("#psychograph_cognee_recall_enabled").on("change", function () {
-        ensureSettings().cognee.recallEnabled = $(this).prop("checked");
         saveSettingsDebounced();
     });
 
@@ -807,7 +800,7 @@ let cogneeRecallInFlight = false;
 
 async function handleCogneeRecall(type, _options, dryRun) {
     const settings = ensureSettings();
-    if (dryRun || type === "quiet" || !settings.enabled || !settings.cognee.recallEnabled || !settings.cognee.baseUrl || !settings.cognee.apiKey) {
+    if (dryRun || type === "quiet" || !settings.enabled || !settings.cognee.enabled || !settings.cognee.baseUrl || !settings.cognee.apiKey) {
         return;
     }
     if (cogneeRecallInFlight) {
