@@ -722,17 +722,21 @@ async function sendMessageToCognee(texts, chatCogneeId, { useSessionCache = true
     }
     formData.append("chunk_size", String(COGNEE_CHUNK_SIZE));
 
+    const textCount = Array.isArray(texts) ? texts.length : 1;
+    const startedAt = performance.now();
     const response = await fetch(`${settings.cognee.baseUrl.replace(/\/$/, "")}/api/v1/remember`, {
         method: "POST",
         headers: { "X-Api-Key": settings.cognee.apiKey },
         body: formData,
     });
+    const elapsedMs = Math.round(performance.now() - startedAt);
 
     if (!response.ok) {
+        console.error(`[Psychograph] Cognee /remember (${textCount} msg, session=${useSessionCache}) failed after ${elapsedMs}ms`);
         throw new Error(`Cognee /remember failed: ${response.status} ${await response.text()}`);
     }
 
-    console.log("[Psychograph] Sent message(s) to Cognee:", await response.json());
+    console.log(`[Psychograph] Cognee /remember (${textCount} msg, session=${useSessionCache}) took ${elapsedMs}ms:`, await response.json());
 }
 
 const cogneeIngestedMessages = new WeakSet();
@@ -855,6 +859,7 @@ async function recallFromCognee(chatCogneeId) {
     const settings = ensureSettings();
     const context = getContext();
 
+    const startedAt = performance.now();
     const response = await fetch(`${settings.cognee.baseUrl.replace(/\/$/, "")}/api/v1/recall`, {
         method: "POST",
         headers: { "X-Api-Key": settings.cognee.apiKey, "Content-Type": "application/json" },
@@ -876,6 +881,8 @@ async function recallFromCognee(chatCogneeId) {
             context_format: "context",
         }),
     });
+    const elapsedMs = Math.round(performance.now() - startedAt);
+    console.log(`[Psychograph] Cognee /recall (search_type=${settings.cognee.searchType}) took ${elapsedMs}ms`);
 
     if (!response.ok) {
         throw new Error(`Cognee /recall failed: ${response.status} ${await response.text()}`);
