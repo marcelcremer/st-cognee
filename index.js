@@ -772,23 +772,23 @@ async function recallFromCognee(chatCogneeId) {
             query: buildCogneeRecallQuery(context.name1, context.name2),
             system_prompt: buildCogneeRecallSystemPrompt(context.name2),
             datasets: [`psychograph-chat-${chatCogneeId}`],
-            // Ingestion (sendMessageToCognee) always sets session_id, so every
-            // message lands in the session cache first and is only bridged
-            // into the permanent graph in the background (see /remember in
-            // the OpenAPI spec) - there's no guarantee that bridge has run by
-            // the time we recall on the very next turn. Querying scope
-            // "graph" alone was blind to everything still sitting in that
-            // cache, which in practice was most of the recent conversation.
-            // Passing session_id here too and scoping to both sources
-            // surfaces recent turns immediately while still including
-            // whatever has already been consolidated into the graph.
-            session_id: chatCogneeId,
-            scope: ["session", "graph"],
-            // GRAPH_COMPLETION only makes sense for the graph source; session
-            // cache entries are raw QA/trace records, not graph nodes. Null
-            // lets Cognee auto-route each source to a compatible strategy
-            // (see RecallPayloadDTO.searchType in the OpenAPI spec).
-            search_type: null,
+            // Tried adding scope: ["session", "graph"] + session_id so recent
+            // messages still sitting in the session cache (ingestion always
+            // sets session_id, so everything lands there first and is only
+            // bridged into the permanent graph in the background - see
+            // /remember in the OpenAPI spec) would show up before that bridge
+            // runs. Reverted: "session" scope returns raw ResponseQAEntry
+            // records (question/context/answer) that never pass through
+            // system_prompt below, and search_type: null let the graph side
+            // auto-route to a less concise strategy too - together that blew
+            // up recall output to several times its normal length, full of
+            // raw prose instead of the requested short bullet points. Back to
+            // graph-only + an explicit completion search type, which keeps
+            // recall bounded to what buildCogneeRecallSystemPrompt asks for,
+            // at the cost of not seeing anything not yet bridged into the
+            // graph.
+            scope: "graph",
+            search_type: "GRAPH_COMPLETION",
         }),
     });
 
