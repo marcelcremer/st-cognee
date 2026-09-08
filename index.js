@@ -772,8 +772,23 @@ async function recallFromCognee(chatCogneeId) {
             query: buildCogneeRecallQuery(context.name1, context.name2),
             system_prompt: buildCogneeRecallSystemPrompt(context.name2),
             datasets: [`psychograph-chat-${chatCogneeId}`],
-            scope: "graph",
-            search_type: "GRAPH_COMPLETION",
+            // Ingestion (sendMessageToCognee) always sets session_id, so every
+            // message lands in the session cache first and is only bridged
+            // into the permanent graph in the background (see /remember in
+            // the OpenAPI spec) - there's no guarantee that bridge has run by
+            // the time we recall on the very next turn. Querying scope
+            // "graph" alone was blind to everything still sitting in that
+            // cache, which in practice was most of the recent conversation.
+            // Passing session_id here too and scoping to both sources
+            // surfaces recent turns immediately while still including
+            // whatever has already been consolidated into the graph.
+            session_id: chatCogneeId,
+            scope: ["session", "graph"],
+            // GRAPH_COMPLETION only makes sense for the graph source; session
+            // cache entries are raw QA/trace records, not graph nodes. Null
+            // lets Cognee auto-route each source to a compatible strategy
+            // (see RecallPayloadDTO.searchType in the OpenAPI spec).
+            search_type: null,
         }),
     });
 
@@ -856,13 +871,12 @@ function isAreaTriggerRelevant(areaKey, eventType) {
     const config = AREA_SLOT_CONFIGS[areaKey];
     if (config.triggerMode === "always") {
         return eventType === event_types.MESSAGE_SENT
-            || eventType === event_types.MESSAGE_RECEIVED
-            || eventType === event_types.MESSAGE_SWIPED;
+            || eventType === event_types.MESSAGE_RECEIVED;
     }
 
     const target = ensureChatState().target;
     if (target === "char") {
-        return eventType === event_types.MESSAGE_RECEIVED || eventType === event_types.MESSAGE_SWIPED;
+        return eventType === event_types.MESSAGE_RECEIVED;
     }
     return eventType === event_types.MESSAGE_SENT;
 }
@@ -900,11 +914,16 @@ function handleChatMessageEvent(eventType) {
 function bindChatEvents() {
     eventSource.on(event_types.MESSAGE_SENT, handleChatMessageEvent(event_types.MESSAGE_SENT));
     eventSource.on(event_types.MESSAGE_RECEIVED, handleChatMessageEvent(event_types.MESSAGE_RECEIVED));
-    eventSource.on(event_types.MESSAGE_SWIPED, handleChatMessageEvent(event_types.MESSAGE_SWIPED));
 
-    // Not bound on MESSAGE_SWIPED: swiping only changes the active swipe of
-    // the *last* message, never its predecessor, so it would just resend
-    // the same predecessor for no reason.
+    // Not bound on MESSAGE_SWIPED: SillyTavern fires it the instant a swipe
+    // is *requested*, before a newly generated swipe's text exists - at that
+    // point chat[].mes still holds the previous swipe's content, so running
+    // extraction there would reprocess stale text. When a swipe finishes
+    // generating, SillyTavern fires MESSAGE_RECEIVED (type "swipe") with the
+    // final text already in place, which is already bound above. Cycling to
+    // a swipe that was already generated fires only MESSAGE_SWIPED, with no
+    // new content to extract - correctly skipped here for the same reason
+    // it's skipped for Cognee ingestion below.
     eventSource.on(event_types.MESSAGE_SENT, handleCogneeIngestion);
     eventSource.on(event_types.MESSAGE_RECEIVED, handleCogneeIngestion);
 
