@@ -657,8 +657,8 @@ function slugify(text) {
     return String(text || "")
         .toLowerCase()
         .trim()
-        .replace(/[^a-z0-9]+/g, "-")
-        .replace(/^-+|-+$/g, "") || "character";
+        .replace(/[^a-z0-9]+/g, "_")
+        .replace(/^_+|_+$/g, "") || "character";
 }
 
 // Stored in chat_metadata (saved inside the chat file itself) rather than
@@ -691,7 +691,7 @@ function writeCogneeChatId(id) {
     context.chatMetadata[COGNEE_METADATA_KEY] = {
         ...context.chatMetadata[COGNEE_METADATA_KEY],
         cogneeChatId: id,
-        cogneeDatasetName: `psychograph-${slugify(context.name2)}_${id}`,
+        cogneeDatasetName: `st_${slugify(context.name2)}_${id}`,
         cogneeBackfilledCount: 0,
     };
     context.saveMetadataDebounced();
