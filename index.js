@@ -298,6 +298,7 @@ const defaultSettings = {
         apiKey: "",
         enabled: false,
         recallEnabled: false,
+        searchType: "GRAPH_COMPLETION",
     },
     state: {
         areas: Object.fromEntries(
@@ -397,6 +398,7 @@ function renderSettings() {
     $("#psychograph_cognee_api_key").val(settings.cognee.apiKey);
     $("#psychograph_cognee_enabled").prop("checked", settings.cognee.enabled);
     $("#psychograph_cognee_recall_enabled").prop("checked", settings.cognee.recallEnabled);
+    $("#psychograph_cognee_search_type").val(settings.cognee.searchType);
     renderCogneeChatSection();
 
     for (const { key, id } of STATE_AREAS) {
@@ -453,6 +455,11 @@ function bindSettingsEvents() {
 
     $("#psychograph_cognee_recall_enabled").on("change", function () {
         ensureSettings().cognee.recallEnabled = $(this).prop("checked");
+        saveSettingsDebounced();
+    });
+
+    $("#psychograph_cognee_search_type").on("change", function () {
+        ensureSettings().cognee.searchType = String($(this).val());
         saveSettingsDebounced();
     });
 
@@ -772,7 +779,7 @@ async function recallFromCognee(chatCogneeId) {
             // bypassed the completion system prompt and blew up recall into
             // raw prose (this was before the only_context switch below).
             scope: "graph",
-            search_type: "GRAPH_COMPLETION",
+            search_type: settings.cognee.searchType,
             // Skip Cognee's own completion LLM call — we get the raw retrieval
             // context instead of an already-synthesized answer, and let the
             // main roleplay generation (which has the full State/Core Memory/

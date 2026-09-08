@@ -213,47 +213,53 @@
             <hr>
             <div class="inline-drawer">
                 <div class="inline-drawer-toggle inline-drawer-header">
-                    <span>Lore / Graph</span>
+                    <span>Long Term Memory</span>
                     <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
                 </div>
                 <div class="inline-drawer-content">
-                    <small>Coming soon.</small>
+                    <label for="psychograph_cognee_base_url">Base URL</label>
+                    <input id="psychograph_cognee_base_url" type="text" class="text_pole" placeholder="https://your-cognee-instance.example.com" />
+                    <label for="psychograph_cognee_api_key">API Key</label>
+                    <input id="psychograph_cognee_api_key" type="password" class="text_pole" placeholder="Cognee API key" />
 
-                    <div class="inline-drawer">
-                        <div class="inline-drawer-toggle inline-drawer-header">
-                            <span>Cognee Connection</span>
-                            <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
+                    <label class="checkbox_label" for="psychograph_cognee_enabled">
+                        <input id="psychograph_cognee_enabled" type="checkbox" />
+                        Send predecessor messages to Cognee (experimental test)
+                    </label>
+
+                    <label class="checkbox_label" for="psychograph_cognee_recall_enabled">
+                        <input id="psychograph_cognee_recall_enabled" type="checkbox" />
+                        Query Cognee for context before each generation (experimental test)
+                    </label>
+
+                    <label for="psychograph_cognee_search_type">Recall search type</label>
+                    <select id="psychograph_cognee_search_type" class="text_pole">
+                        <option value="GRAPH_COMPLETION">Graph Completion (default)</option>
+                        <option value="GRAPH_COMPLETION_DECOMPOSITION">Graph Completion (Decomposition)</option>
+                        <option value="GRAPH_COMPLETION_COT">Graph Completion (Chain of Thought)</option>
+                        <option value="GRAPH_COMPLETION_CONTEXT_EXTENSION">Graph Completion (Context Extension)</option>
+                        <option value="GRAPH_SUMMARY_COMPLETION">Graph Summary Completion</option>
+                        <option value="TRIPLET_COMPLETION">Triplet Completion</option>
+                        <option value="HYBRID_COMPLETION">Hybrid Completion</option>
+                        <option value="RAG_COMPLETION">RAG Completion</option>
+                        <option value="CHUNKS">Chunks</option>
+                        <option value="SUMMARIES">Summaries</option>
+                        <option value="FEELING_LUCKY">Feeling Lucky (auto-select)</option>
+                    </select>
+                    <small>Retrieval strategy Cognee uses for the recall query. Cognee's own extraction/retrieval internals differ per type and aren't documented in the OpenAPI spec — test against your own instance rather than assuming which is fastest or most accurate.</small>
+
+                    <hr>
+                    <div id="psychograph_cognee_chat_section">
+                        <label>Current chat</label>
+                        <div><span>Id:</span> <code id="psychograph_cognee_chat_id">&mdash;</code></div>
+                        <div><span>Dataset:</span> <code id="psychograph_cognee_chat_dataset">&mdash;</code></div>
+                        <div class="flex-container">
+                            <input id="psychograph_cognee_chat_id_input" type="text" class="text_pole" placeholder="Paste an id to reuse it for this chat" />
+                            <div id="psychograph_cognee_chat_id_set" class="menu_button">Set</div>
+                            <div id="psychograph_cognee_chat_id_regenerate" class="menu_button">Regenerate</div>
                         </div>
-                        <div class="inline-drawer-content">
-                            <label for="psychograph_cognee_base_url">Base URL</label>
-                            <input id="psychograph_cognee_base_url" type="text" class="text_pole" placeholder="https://your-cognee-instance.example.com" />
-                            <label for="psychograph_cognee_api_key">API Key</label>
-                            <input id="psychograph_cognee_api_key" type="password" class="text_pole" placeholder="Cognee API key" />
-
-                            <label class="checkbox_label" for="psychograph_cognee_enabled">
-                                <input id="psychograph_cognee_enabled" type="checkbox" />
-                                Send predecessor messages to Cognee (experimental test)
-                            </label>
-
-                            <label class="checkbox_label" for="psychograph_cognee_recall_enabled">
-                                <input id="psychograph_cognee_recall_enabled" type="checkbox" />
-                                Query Cognee for context before each generation (experimental test)
-                            </label>
-
-                            <hr>
-                            <div id="psychograph_cognee_chat_section">
-                                <label>Current chat</label>
-                                <div><span>Id:</span> <code id="psychograph_cognee_chat_id">&mdash;</code></div>
-                                <div><span>Dataset:</span> <code id="psychograph_cognee_chat_dataset">&mdash;</code></div>
-                                <div class="flex-container">
-                                    <input id="psychograph_cognee_chat_id_input" type="text" class="text_pole" placeholder="Paste an id to reuse it for this chat" />
-                                    <div id="psychograph_cognee_chat_id_set" class="menu_button">Set</div>
-                                    <div id="psychograph_cognee_chat_id_regenerate" class="menu_button">Regenerate</div>
-                                </div>
-                                <div id="psychograph_cognee_backfill" class="menu_button">Send full chat history to Cognee</div>
-                                <small id="psychograph_cognee_backfill_status"></small>
-                            </div>
-                        </div>
+                        <div id="psychograph_cognee_backfill" class="menu_button">Send full chat history to Cognee</div>
+                        <small id="psychograph_cognee_backfill_status"></small>
                     </div>
                 </div>
             </div>
