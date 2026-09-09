@@ -128,6 +128,19 @@ alongside the first commit or after the fact.
 - This covers *implementation*. Reading the repo and the issues to answer a
   question, and commenting on issues, need no label.
 
+A PR that implements an issue closes it. Put a closing keyword and the issue
+number in the PR **description** — `Closes #12` — so merging the PR closes the
+ticket by itself. GitHub only acts on the keyword in the description (and in
+commit messages on the default branch), not in a PR title or a comment, and
+only for the same repository unless the reference is written `owner/repo#12`.
+
+- One line, on its own, near the top or bottom of the description. Referencing
+  the issue anywhere else in the text is fine, but does not close anything.
+- A PR that touches several issues repeats the keyword per issue —
+  `Closes #12, closes #14`. A bare `#14` in the same sentence does not count.
+- For work that only advances a ticket rather than finishing it, reference it
+  *without* a keyword (`Part of #12`), so the merge leaves it open.
+
 ## Language
 
 Talk to the repo owner in **German**. Everything that lands in the repo or on
