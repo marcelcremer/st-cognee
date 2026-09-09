@@ -34,6 +34,7 @@ const EMPTY_SLOT_ANSWERS = new Set(["none", "nothing", "n/a", "na", "unknown", "
 // with the newer areas' leaner style.
 const AREA_SLOT_CONFIGS = {
     clothes: {
+        scope: "character",
         id: "clothes",
         label: "Clothes",
         icon: "fa-shirt",
@@ -76,6 +77,7 @@ change about the slot, mark it false.`,
         emptyValue: "none",
     },
     physicalState: {
+        scope: "character",
         id: "physical_state",
         label: "Body",
         icon: "fa-heart-pulse",
@@ -116,6 +118,7 @@ currently limits their ability to act.`,
         slotDefaultSentinel: () => "none",
     },
     situational: {
+        scope: "scene",
         id: "situational",
         label: "Scene",
         icon: "fa-location-dot",
@@ -604,6 +607,78 @@ async function runAreaExtraction(areaKey, message) {
     getContext().saveMetadataDebounced();
 }
 
+const STATE_INJECT_ID = "psychograph_state";
+const STATE_INJECT_HEADING = "## Current state information";
+
+function readTargetName() {
+    const context = getContext();
+    return (ensureChatState().target === "user" ? context.name1 : context.name2) || "The character";
+}
+
+// "|" ends a slash command, so a slot value carrying one would truncate the
+// inject and run whatever followed as a command of its own.
+function sanitizeSlotValue(value) {
+    return String(value).replace(/[|\r\n]+/g, " ").trim();
+}
+
+function buildStateSnapshot() {
+    const settings = ensureSettings();
+    const chatState = ensureChatState();
+    const groups = [];
+
+    for (const { key } of STATE_AREAS) {
+        if (!settings.state.areas[key].enabled) {
+            continue;
+        }
+
+        const config = AREA_SLOT_CONFIGS[key];
+        const lines = config.slots
+            .map((slot) => [slot, sanitizeSlotValue(chatState.areas[key].slots[slot] ?? "")])
+            .filter(([, value]) => value)
+            .map(([slot, value]) => `- ${slot}: ${value}`);
+        if (lines.length === 0) {
+            continue;
+        }
+
+        const heading = config.scope === "character"
+            ? `${readTargetName()}'s ${config.label.toLowerCase()}`
+            : config.label;
+        groups.push(`${heading}\n${lines.join("\n")}`);
+    }
+
+    return groups.join("\n\n");
+}
+
+// Runs on GENERATION_AFTER_COMMANDS (covers swipe/continue/regenerate, where no
+// MESSAGE_SENT fires) and again after each message's extraction, so the snapshot
+// reflects the message that just triggered this turn rather than the one before.
+async function refreshStateInject() {
+    if (!ensureSettings().enabled) {
+        return;
+    }
+
+    const snapshot = buildStateSnapshot();
+    if (!snapshot) {
+        await flushStateInject();
+        return;
+    }
+
+    await getContext().executeSlashCommandsWithOptions(
+        `/inject id=${STATE_INJECT_ID} position=after ephemeral=true scan=true ${STATE_INJECT_HEADING}\n${snapshot} |`,
+    );
+}
+
+async function handleStateInjectForGeneration(type, _options, dryRun) {
+    if (dryRun || type === "quiet") {
+        return;
+    }
+    await refreshStateInject();
+}
+
+async function flushStateInject() {
+    await getContext().executeSlashCommandsWithOptions(`/flushinject ${STATE_INJECT_ID} |`);
+}
+
 const COGNEE_METADATA_KEY = "stPsychograph";
 
 // Stored in chat_metadata (saved inside the chat file itself) rather than
@@ -865,6 +940,7 @@ function handleChatMessageEvent(eventType) {
         }
 
         await Promise.all(eligibleAreaKeys.map((areaKey) => runAreaExtraction(areaKey, lastMessage.mes)));
+        await refreshStateInject();
     };
 }
 
@@ -882,6 +958,9 @@ function bindChatEvents() {
 
     eventSource.on(event_types.GENERATION_AFTER_COMMANDS, handleCogneeRecall);
     eventSource.on(event_types.GENERATION_ENDED, flushCogneeRecallInject);
+
+    eventSource.on(event_types.GENERATION_AFTER_COMMANDS, handleStateInjectForGeneration);
+    eventSource.on(event_types.GENERATION_ENDED, flushStateInject);
 
     // Slot inputs show the current chat's state — without this they'd keep
     // displaying whatever chat was open when the panel was last rendered.
