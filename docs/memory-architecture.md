@@ -161,14 +161,20 @@ Three are available locally: `Qwen3-4B-Instruct-2507`, `Qwen3-Embedding-0.6B`,
   exactly the gate question, but as a *score* rather than an LLM boolean. Over
   a small candidate set it turns trigger quality into a threshold that can be
   calibrated against real transcripts, instead of a prompt-wording argument.
-  Blocker: no OpenAI-standard rerank endpoint; check whether the serving stack
-  exposes one before designing around it.
+  The serving stack (omlx) exposes an OpenAI-compatible `POST /v1/rerank`, so
+  this is available rather than hypothetical. Caveat: a reranker scores topical
+  relevance, not "did this change" — it replaces the *recall* stage (which
+  candidates are plausible, be generous), and the 4B still does precision.
 - **Embedding** — instruction-aware, so it can be steered toward "state change"
   rather than topical similarity. Needed for compaction and for cue matching.
 - Because retrieval goes through the index, only ~150 vectors are ever searched.
   Brute-force cosine in JS is sub-millisecond at that size, so no vector
   database, no IndexedDB, no dependency — which is also what
   [`CLAUDE.md`](../CLAUDE.md) asks for.
+- Both the rerank and the embedding call are plain `fetch` calls against the
+  backend's own base URL. SillyTavern's connection profiles cover chat
+  completions only, so these need a base-URL setting of their own, in the shape
+  of the existing Cognee one.
 
 ## Open risks
 

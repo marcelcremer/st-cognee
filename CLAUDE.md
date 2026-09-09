@@ -108,11 +108,31 @@ its token budget) are fine to make normally; the prompt text itself is not.
 
 All work happens on feature branches. Never commit directly to `main`.
 
+## Working tickets
+
+An issue is only ready to be worked on once it carries the **`claude-work`**
+label. The label is the go-ahead: it is applied by the repo owner, never by
+the agent.
+
+- Check the label before starting. If an issue named in a request does not
+  have it, say so and ask for it to be applied instead of starting the work.
+- Being linked, referenced or discussed is not a go-ahead — neither is a
+  blocking relationship to a labelled issue. Only the label on that issue
+  counts.
+- The label scopes the work to that issue. A neighbouring issue that turns
+  out to need a change is reported, not fixed in passing.
+- This gates *implementation*. Reading the repo and the issues to answer a
+  question, and commenting on issues, are fine without it.
+
 ## Language
 
-All repo content (code, comments, README, this file, GitHub issues/PRs) is
-written in English, regardless of the language used in source material or
-conversations that produced it.
+Talk to the repo owner in **German**. Everything that lands in the repo or on
+GitHub is written in **English** — code, comments, README, this file, commit
+messages, branch names, issues, PRs and issue/PR comments — regardless of the
+language used in source material or in the conversation that produced it.
+
+So a German conversation still produces English commits and English issue
+comments; only the chat itself switches language.
 
 ## SillyTavern extension conventions
 
