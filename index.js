@@ -18,6 +18,7 @@ const SITUATIONAL_SLOTS = ["location", "presentPeople", "timeOfDay"];
 
 const AREA_DIFF_MAX_TOKENS = 250;
 const AREA_SLOT_UPDATE_MAX_TOKENS = 200;
+const AREA_GATE_MAX_TOKENS = 200;
 
 // Values a model reaches for when a slot holds nothing. Outside Clothes these
 // are an absence and must not reach the prompt; inside Clothes "none" is itself
@@ -72,6 +73,7 @@ change about the slot, mark it false.`,
         updateHint: (slot) => `Hint: There are multiple slots - you only have to concentrate on ${slot} though. Legwear covers the leg above the ankle, Footwear the foot. An accessory typically refers to an item worn to complement or enhance a garment or appearance.`,
         slotUpdateStateDescription: "The full new state of this slot after applying the message. Comma-separated list of items if multiple. Use \"none\" if nothing is worn in this slot.",
         slotDefaultSentinel: () => "none",
+        gateDescription: "True if the message contains information about what a character is wearing, or a change to it.",
         // The only area where "none" is a value rather than an absence: a bare
         // slot is what the scene is about, so it has to reach the prompt.
         emptyValue: "none",
@@ -116,6 +118,7 @@ currently limits their ability to act.`,
         },
         slotUpdateStateDescription: "The new value of this slot after applying the update rules above.",
         slotDefaultSentinel: () => "none",
+        gateDescription: "True if the message contains information about a character's bodily condition, what limits their freedom to act, or a lasting change to their body.",
     },
     situational: {
         scope: "scene",
@@ -161,6 +164,7 @@ not their actions or dialogue.`,
             const context = getContext();
             return [context.name1, context.name2].filter(Boolean).join(", ") || "none";
         },
+        gateDescription: "True if the message contains information about where the characters are, who is with them, or what time it is.",
     },
 };
 
@@ -235,6 +239,40 @@ function buildAreaSlotUpdateSchema(config) {
             state: { type: "string", description: config.slotUpdateStateDescription },
         },
         required: ["reasoning", "state"],
+        additionalProperties: false,
+    };
+}
+
+function buildAreaGatePrompt(eligibleAreaKeys, message) {
+    const exampleShape = JSON.stringify({
+        reasoning: "...",
+        ...Object.fromEntries(eligibleAreaKeys.map((key) => [key, false])),
+    });
+    const countPhrase = eligibleAreaKeys.length === 1 ? "the boolean" : `the ${eligibleAreaKeys.length} booleans`;
+
+    return [
+        "For each area below, determine whether the message contains any\ninformation relevant to it.",
+        "If you find any information relevant to an area, mark it true.\nOtherwise mark it false.",
+        "Reasoning is just for debug, so one concise sentence is enough.",
+        `Message:\n"""\n${message}\n"""`,
+        `Respond with ONLY a JSON object (no markdown code fence). Fill in\n"reasoning" first, then ${countPhrase}, using exactly this shape:\n${exampleShape}`,
+    ].join("\n\n");
+}
+
+function buildAreaGateSchema(eligibleAreaKeys) {
+    const properties = {
+        reasoning: {
+            type: "string",
+            description: "One short clause per area, in order, noting whether the message contains information relevant to it and why.",
+        },
+    };
+    for (const key of eligibleAreaKeys) {
+        properties[key] = { type: "boolean", description: AREA_SLOT_CONFIGS[key].gateDescription };
+    }
+    return {
+        type: "object",
+        properties,
+        required: ["reasoning", ...eligibleAreaKeys],
         additionalProperties: false,
     };
 }
@@ -535,6 +573,27 @@ async function sendJsonSchemaRequest(profileId, schemaName, schema, prompt, maxT
     );
 
     return parseJsonResponse(response.content);
+}
+
+async function runAreaGate(profileId, eligibleAreaKeys, message) {
+    if (eligibleAreaKeys.length === 0) {
+        return [];
+    }
+
+    const prompt = buildAreaGatePrompt(eligibleAreaKeys, message);
+    const schema = buildAreaGateSchema(eligibleAreaKeys);
+
+    try {
+        const gate = await sendJsonSchemaRequest(profileId, "area_gate", schema, prompt, AREA_GATE_MAX_TOKENS);
+        console.log("[Psychograph] Area gate reasoning:", gate.reasoning);
+        return eligibleAreaKeys.filter((key) => gate[key] === true);
+    } catch (error) {
+        // Extract nothing rather than everything: a failed gate is the one case
+        // where running all areas is both the most expensive outcome and the
+        // least informed one.
+        console.error("[Psychograph] Area gate call failed, extracting nothing this turn:", error);
+        return [];
+    }
 }
 
 function normalizeSlotValue(config, value) {
@@ -928,8 +987,9 @@ function handleChatMessageEvent(eventType) {
             return;
         }
 
-        if (!settings.connectionProfile) {
-            console.warn("[Psychograph] No connection profile configured, skipping extraction.");
+        const profileId = settings.connectionProfile;
+        if (!profileId) {
+            console.warn("[Psychograph] Area gate: no connection profile configured, skipping.");
             return;
         }
 
@@ -939,7 +999,8 @@ function handleChatMessageEvent(eventType) {
             return;
         }
 
-        await Promise.all(eligibleAreaKeys.map((areaKey) => runAreaExtraction(areaKey, lastMessage.mes)));
+        const gatedAreaKeys = await runAreaGate(profileId, eligibleAreaKeys, lastMessage.mes);
+        await Promise.all(gatedAreaKeys.map((areaKey) => runAreaExtraction(areaKey, lastMessage.mes)));
         await refreshStateInject();
     };
 }
