@@ -495,6 +495,7 @@ function bindSettingsEvents() {
     });
 
     $("#psychograph_cognee_backfill").on("click", backfillChatHistoryToCognee);
+    $("#psychograph_cognee_backfill_next").on("click", backfillNextCogneeBatch);
 
     $("#psychograph_cognee_backfill_reset").on("click", async function () {
         if (cogneeBackfillRunning) {
@@ -852,65 +853,110 @@ let cogneeBackfillRunning = false;
 // every successful batch, not just at the end, so pressing the button again
 // after a partial run (error, or the tab was closed mid-run) picks up where
 // it left off instead of re-sending everything from the start.
-async function backfillChatHistoryToCognee() {
-    if (cogneeBackfillRunning) {
-        return;
-    }
 
+function cogneeBackfillPrecheck() {
     const settings = ensureSettings();
     if (!settings.cognee.baseUrl || !settings.cognee.apiKey) {
         toastr.warning("Configure the Cognee base URL and API key first.", "Psychograph");
-        return;
+        return false;
     }
+    const total = getCogneeBackfillableMessages().length;
+    if (total === 0) {
+        toastr.info("No messages in this chat yet.", "Psychograph");
+        return false;
+    }
+    if (readCogneeBackfilledCount() >= total) {
+        toastr.info("Everything in this chat is already backfilled.", "Psychograph");
+        return false;
+    }
+    return true;
+}
 
+// The unit both the "send everything" loop and the manual "Next batch"
+// button use: sends exactly one batch (+ memify, if enabled) starting from
+// the current persisted progress. Re-reads messages/alreadyBackfilled fresh
+// each call rather than taking them as params, so it's correct whether it's
+// called once from a button click or repeatedly from backfillChatHistoryToCognee's
+// loop, with the same persisted state either way as the source of truth.
+async function sendNextCogneeBackfillBatch() {
+    const settings = ensureSettings();
     const context = getContext();
     const messages = getCogneeBackfillableMessages();
-    if (messages.length === 0) {
-        toastr.info("No messages in this chat yet.", "Psychograph");
-        return;
-    }
-
     const alreadyBackfilled = Math.min(readCogneeBackfilledCount(), messages.length);
-    if (alreadyBackfilled >= messages.length) {
-        toastr.info("Everything in this chat is already backfilled.", "Psychograph");
-        return;
-    }
-
     const batchSize = Math.max(1, settings.cognee.backfillBatchSize);
     const chatCogneeId = getCogneeChatId();
+
+    const batch = messages.slice(alreadyBackfilled, alreadyBackfilled + batchSize);
+    const texts = batch.map((message) => {
+        const speaker = message.name || (message.is_user ? context.name1 : context.name2);
+        return `${speaker}: ${message.mes}`;
+    });
+
+    await sendMessageToCognee(texts, chatCogneeId, { useSessionCache: false });
+    for (const message of batch) {
+        cogneeIngestedMessages.add(message);
+    }
+
+    const sent = Math.min(alreadyBackfilled + batchSize, messages.length);
+    writeCogneeBackfilledCount(sent);
+    $("#psychograph_cognee_backfill_status").text(`Sent ${sent}/${messages.length}...`);
+    renderCogneeChatSection();
+
+    if (settings.cognee.backfillMemifyEnabled) {
+        $("#psychograph_cognee_backfill_status").text(`Sent ${sent}/${messages.length}, deduping entities...`);
+        await runCogneeMemify();
+    }
+}
+
+async function backfillChatHistoryToCognee() {
+    if (cogneeBackfillRunning || !cogneeBackfillPrecheck()) {
+        return;
+    }
+
+    const startCount = readCogneeBackfilledCount();
+    const total = getCogneeBackfillableMessages().length;
     cogneeBackfillRunning = true;
     $("#psychograph_cognee_backfill").addClass("disabled");
+    $("#psychograph_cognee_backfill_next").addClass("disabled");
 
     try {
-        for (let i = alreadyBackfilled; i < messages.length; i += batchSize) {
-            const batch = messages.slice(i, i + batchSize);
-            const texts = batch.map((message) => {
-                const speaker = message.name || (message.is_user ? context.name1 : context.name2);
-                return `${speaker}: ${message.mes}`;
-            });
-
-            await sendMessageToCognee(texts, chatCogneeId, { useSessionCache: false });
-            for (const message of batch) {
-                cogneeIngestedMessages.add(message);
-            }
-
-            const sent = Math.min(i + batchSize, messages.length);
-            writeCogneeBackfilledCount(sent);
-            $("#psychograph_cognee_backfill_status").text(`Sent ${sent}/${messages.length}...`);
-            renderCogneeChatSection();
-
-            if (settings.cognee.backfillMemifyEnabled) {
-                $("#psychograph_cognee_backfill_status").text(`Sent ${sent}/${messages.length}, deduping entities...`);
-                await runCogneeMemify();
-            }
+        while (readCogneeBackfilledCount() < total) {
+            await sendNextCogneeBackfillBatch();
         }
-        toastr.success(`Sent ${messages.length - alreadyBackfilled} messages to Cognee.`, "Psychograph");
+        toastr.success(`Sent ${total - startCount} messages to Cognee.`, "Psychograph");
     } catch (error) {
         console.error("[Psychograph] Backfill failed:", error);
         toastr.error("Backfill failed, see console for details. Press the button again to resume from where it stopped.", "Psychograph");
     } finally {
         cogneeBackfillRunning = false;
         $("#psychograph_cognee_backfill").removeClass("disabled");
+        $("#psychograph_cognee_backfill_next").removeClass("disabled");
+        $("#psychograph_cognee_backfill_status").text("");
+        renderCogneeChatSection();
+    }
+}
+
+// Manual single-step version of the above, for watching each batch (and its
+// memify pass) land before deciding whether to continue — a debugging/tuning
+// aid, not a replacement for the "send everything" button above.
+async function backfillNextCogneeBatch() {
+    if (cogneeBackfillRunning || !cogneeBackfillPrecheck()) {
+        return;
+    }
+
+    cogneeBackfillRunning = true;
+    $("#psychograph_cognee_backfill").addClass("disabled");
+    $("#psychograph_cognee_backfill_next").addClass("disabled");
+
+    try {
+        await sendNextCogneeBackfillBatch();
+    } catch (error) {
+        console.error("[Psychograph] Backfill batch failed:", error);
+        toastr.error("Batch failed, see console for details.", "Psychograph");
+    } finally {
+        cogneeBackfillRunning = false;
+        $("#psychograph_cognee_backfill").removeClass("disabled");
+        $("#psychograph_cognee_backfill_next").removeClass("disabled");
         $("#psychograph_cognee_backfill_status").text("");
         renderCogneeChatSection();
     }
