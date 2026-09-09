@@ -250,9 +250,9 @@
 
                     <label class="checkbox_label" for="psychograph_cognee_backfill_memify_enabled">
                         <input id="psychograph_cognee_backfill_memify_enabled" type="checkbox" />
-                        Run entity dedup (memify) after each backfill batch
+                        Run entity dedup (memify) once after backfill finishes
                     </label>
-                    <small>Runs Cognee's detect_entity_duplicates/merge_entity_duplicates after every batch, before the next one starts, so names/pronouns introduced in one batch get merged with earlier mentions instead of splitting into duplicate graph entities. Makes backfill slower (one extra call per batch).</small>
+                    <small>Runs Cognee's detect_entity_duplicates/merge_entity_duplicates a single time after the full backfill completes, so names/pronouns get merged with earlier mentions instead of splitting into duplicate graph entities. Deliberately not per-batch: Cognee's own docs say memify reprocesses the whole graph when unscoped, so running it after every batch would redo that whole-graph work on every single batch instead of once.</small>
 
                     <hr>
                     <div id="psychograph_cognee_chat_section">
@@ -269,6 +269,9 @@
                             <div id="psychograph_cognee_backfill" class="menu_button">Send full chat history to Cognee</div>
                             <div id="psychograph_cognee_backfill_next" class="menu_button">Next batch only</div>
                             <div id="psychograph_cognee_backfill_reset" class="menu_button">Mark all as not backfilled</div>
+                        </div>
+                        <div class="flex-container">
+                            <div id="psychograph_cognee_memify_now" class="menu_button">Run entity dedup now</div>
                         </div>
                         <small id="psychograph_cognee_backfill_status"></small>
                     </div>

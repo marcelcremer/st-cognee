@@ -496,6 +496,7 @@ function bindSettingsEvents() {
 
     $("#psychograph_cognee_backfill").on("click", backfillChatHistoryToCognee);
     $("#psychograph_cognee_backfill_next").on("click", backfillNextCogneeBatch);
+    $("#psychograph_cognee_memify_now").on("click", runCogneeMemifyNow);
 
     $("#psychograph_cognee_backfill_reset").on("click", async function () {
         if (cogneeBackfillRunning) {
@@ -873,11 +874,20 @@ function cogneeBackfillPrecheck() {
 }
 
 // The unit both the "send everything" loop and the manual "Next batch"
-// button use: sends exactly one batch (+ memify, if enabled) starting from
-// the current persisted progress. Re-reads messages/alreadyBackfilled fresh
-// each call rather than taking them as params, so it's correct whether it's
-// called once from a button click or repeatedly from backfillChatHistoryToCognee's
-// loop, with the same persisted state either way as the source of truth.
+// button use: sends exactly one batch, starting from the current persisted
+// progress. Re-reads messages/alreadyBackfilled fresh each call rather than
+// taking them as params, so it's correct whether it's called once from a
+// button click or repeatedly from backfillChatHistoryToCognee's loop, with
+// the same persisted state either way as the source of truth.
+//
+// Deliberately does NOT run memify here. /memify's own `data` param
+// description says the whole graph is forwarded when no data/nodeName is
+// given — meaning an unscoped memify call reprocesses everything ingested
+// so far, not just this batch. Running it after every batch during backfill
+// paid that "whole graph so far" cost on every single batch, so total work
+// grew roughly with the square of the number of batches instead of linearly
+// — see runCogneeMemify and the memify controls in the settings UI, which
+// run it at most once per backfill instead.
 async function sendNextCogneeBackfillBatch() {
     const settings = ensureSettings();
     const context = getContext();
@@ -901,10 +911,23 @@ async function sendNextCogneeBackfillBatch() {
     writeCogneeBackfilledCount(sent);
     $("#psychograph_cognee_backfill_status").text(`Sent ${sent}/${messages.length}...`);
     renderCogneeChatSection();
+}
 
-    if (settings.cognee.backfillMemifyEnabled) {
-        $("#psychograph_cognee_backfill_status").text(`Sent ${sent}/${messages.length}, deduping entities...`);
+// Runs memify at most once, after ingestion is fully done, instead of once
+// per batch — see the note on sendNextCogneeBackfillBatch for why. A memify
+// failure here is reported separately from the ingestion result: the
+// messages are already safely in the graph either way, dedup is a best-effort
+// cleanup pass on top, not a precondition for the backfill having worked.
+async function runBackfillMemifyIfEnabled() {
+    if (!ensureSettings().cognee.backfillMemifyEnabled) {
+        return;
+    }
+    $("#psychograph_cognee_backfill_status").text("Deduping entities...");
+    try {
         await runCogneeMemify();
+    } catch (error) {
+        console.error("[Psychograph] Post-backfill memify failed:", error);
+        toastr.error("Backfill succeeded, but entity dedup afterward failed — see console. Use \"Run entity dedup now\" to retry.", "Psychograph");
     }
 }
 
@@ -924,6 +947,7 @@ async function backfillChatHistoryToCognee() {
             await sendNextCogneeBackfillBatch();
         }
         toastr.success(`Sent ${total - startCount} messages to Cognee.`, "Psychograph");
+        await runBackfillMemifyIfEnabled();
     } catch (error) {
         console.error("[Psychograph] Backfill failed:", error);
         toastr.error("Backfill failed, see console for details. Press the button again to resume from where it stopped.", "Psychograph");
@@ -936,9 +960,11 @@ async function backfillChatHistoryToCognee() {
     }
 }
 
-// Manual single-step version of the above, for watching each batch (and its
-// memify pass) land before deciding whether to continue — a debugging/tuning
-// aid, not a replacement for the "send everything" button above.
+// Manual single-step version of the above, for watching individual batches
+// land before deciding whether to continue — a debugging/tuning aid, not a
+// replacement for the "send everything" button above. Never runs memify
+// itself (see sendNextCogneeBackfillBatch) — use "Run entity dedup now"
+// separately once you're done stepping through batches.
 async function backfillNextCogneeBatch() {
     if (cogneeBackfillRunning || !cogneeBackfillPrecheck()) {
         return;
@@ -959,6 +985,39 @@ async function backfillNextCogneeBatch() {
         $("#psychograph_cognee_backfill_next").removeClass("disabled");
         $("#psychograph_cognee_backfill_status").text("");
         renderCogneeChatSection();
+    }
+}
+
+let cogneeMemifyRunning = false;
+
+// Standalone manual trigger — usable any time (after a full backfill, after
+// stepping through a few batches manually, or periodically during live
+// ingestion), independent of cogneeBackfillRunning so it isn't blocked by
+// (or blocking) batch sends.
+async function runCogneeMemifyNow() {
+    if (cogneeMemifyRunning) {
+        return;
+    }
+    const settings = ensureSettings();
+    if (!settings.cognee.baseUrl || !settings.cognee.apiKey) {
+        toastr.warning("Configure the Cognee base URL and API key first.", "Psychograph");
+        return;
+    }
+
+    cogneeMemifyRunning = true;
+    $("#psychograph_cognee_memify_now").addClass("disabled");
+    $("#psychograph_cognee_backfill_status").text("Deduping entities...");
+
+    try {
+        await runCogneeMemify();
+        toastr.success("Entity dedup finished.", "Psychograph");
+    } catch (error) {
+        console.error("[Psychograph] Entity dedup failed:", error);
+        toastr.error("Entity dedup failed, see console for details.", "Psychograph");
+    } finally {
+        cogneeMemifyRunning = false;
+        $("#psychograph_cognee_memify_now").removeClass("disabled");
+        $("#psychograph_cognee_backfill_status").text("");
     }
 }
 
