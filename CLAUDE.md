@@ -110,19 +110,23 @@ All work happens on feature branches. Never commit directly to `main`.
 
 ## Working tickets
 
-An issue is only ready to be worked on once it carries the **`claude-work`**
-label. The label is the go-ahead: it is applied by the repo owner, never by
-the agent.
+Before implementing an issue, label it **`claude-work`** — the agent applies
+the label itself, and only then starts. The label is how the repo owner sees
+at a glance which tickets are being worked on, so it goes on *first*, not
+alongside the first commit or after the fact.
 
-- Check the label before starting. If an issue named in a request does not
-  have it, say so and ask for it to be applied instead of starting the work.
-- Being linked, referenced or discussed is not a go-ahead — neither is a
-  blocking relationship to a labelled issue. Only the label on that issue
-  counts.
+- One labelled issue at a time per piece of work. The label marks what is
+  actually in progress; labelling a batch up front defeats its purpose.
 - The label scopes the work to that issue. A neighbouring issue that turns
-  out to need a change is reported, not fixed in passing.
-- This gates *implementation*. Reading the repo and the issues to answer a
-  question, and commenting on issues, are fine without it.
+  out to need a change is reported, not fixed in passing — and not labelled
+  either.
+- It is a work marker, not a permission slip. It records what was asked for;
+  it never substitutes for asking. An issue nobody asked to have implemented
+  does not get labelled and worked on unprompted.
+- Remove the label once the work is done (merged, or dropped), so the labelled
+  set stays a picture of the present.
+- This covers *implementation*. Reading the repo and the issues to answer a
+  question, and commenting on issues, need no label.
 
 ## Language
 
