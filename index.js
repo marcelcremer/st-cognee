@@ -25,14 +25,13 @@ const AREA_GATE_MAX_TOKENS = 200;
 // the information (a bare slot is what the scene is about), see emptyValue.
 const EMPTY_SLOT_ANSWERS = new Set(["none", "nothing", "n/a", "na", "unknown", "not established", "-", "keine", "nichts"]);
 
-// Per-area config for the generic diff -> per-slot-update pipeline. Clothes'
-// own prompt *wording* below is copied verbatim from the original
-// clothing-only implementation (issue #2) and must stay byte-for-byte
-// identical - only the mechanical scaffolding around it (this config table,
-// the generic builders below) is new. See CLAUDE.md: extraction-prompt
-// wording is empirically tuned per user/model and requires sign-off before
-// changing, so don't "clean up" Clothes' text even if it looks inconsistent
-// with the newer areas' leaner style.
+// Per-area config for the generic gate -> diff -> per-slot-update pipeline.
+// Every call renders the same markdown document (see buildPromptDocument):
+// what the job is, what this call is assigned to, the rules, then the message
+// last with its speaker on the line above it. The Clothes update wording is
+// the variant that tested 10/10 against the user's own model, with the sheet
+// named "Clothes" rather than "Clothing" as it was in that run; per CLAUDE.md
+// none of this text changes without sign-off and a fresh test run.
 const AREA_SLOT_CONFIGS = {
     clothes: {
         scope: "character",
@@ -40,14 +39,26 @@ const AREA_SLOT_CONFIGS = {
         label: "Clothes",
         icon: "fa-shirt",
         slots: CLOTHING_SLOTS,
-        triggerMode: "target",
         seedField: "target",
-        diffIntroParagraph: `Analyze ONLY the message below (not prior context). For each clothing
-slot, determine whether the message contains any information about it.
-Slots represent where clothing is worn, not specifically a category.
-Important: Legwear covers the leg above the ankle, Footwear the foot.`,
-        diffTrueFalseLine: `If you find any change for a slot, mark it true. When there is no
-change about the slot, mark it false.`,
+        groupDescription: "Clothes slots describe, where something is worn and not necessarily a category.",
+        diffRules: [
+            "Analyze ONLY the message below, not prior context.",
+            "For each slot, determine whether the message contains any information about it.",
+            "If you find any change for a slot, mark it true. When there is no change about the slot, mark it false.",
+        ],
+        updateRules: [
+            "If a new item is added as a layer (e.g. a coat over a blouse), keep the existing item(s) and add the new one.",
+            `If a new item explicitly replaces the existing one (e.g. "changes into a dress"), output only the new item(s).`,
+            `If the message describes a state/condition change to an existing item (stain, tear, wetness, damage), keep the item and add a short state tag in parentheses (max ~5 words), e.g. "white blouse (coffee stain)".`,
+            `If an item is explicitly removed and nothing replaces it, output "none".`,
+            "If nothing actually changed despite the trigger, return the state unchanged.",
+            "Do not invent details that were not stated in the message.",
+            "If an item from the current state is not mentioned in the message at all, keep it unchanged in the output — do not drop it just because it wasn't referenced again.",
+        ],
+        hints: [
+            "Legwear covers the leg above the ankle, Footwear the foot.",
+            "an accessory typically refers to an item worn to complement or enhance a garment or appearance",
+        ],
         diffReasoningDescription: "One short clause per clothing category (top, bottom, underwear, legwear, footwear, accessories, hair, makeup, in that order), noting whether the message explicitly touches on it and why.",
         slotDescriptions: {
             top: "True if the message contains any explicit info about tops (shirts, jackets, coats, etc.) — new item, layering, removal, or state/damage change.",
@@ -59,21 +70,10 @@ change about the slot, mark it false.`,
             hair: "True if hairstyle is described, mentioned, or changed (not just touched/moved).",
             makeup: "True if makeup is applied, described, smeared, or removed.",
         },
-        slotLabel: (slot) => `Clothing slot "${slot}" (where clothing is worn, not a category).`,
-        updateRules: `- If a new item is added as a layer (e.g. a coat over a blouse), keep the
-  existing item(s) and add the new one.
-- If a new item explicitly replaces the existing one (e.g. "changes into a
-  dress"), output only the new item(s).
-- If the message describes a state/condition change to an existing item
-  (stain, tear, wetness, damage), keep the item and add a short state tag
-  in parentheses (max ~5 words), e.g. "white blouse (coffee stain)".
-- If an item is explicitly removed and nothing replaces it, output "none".
-- If nothing actually changed despite the trigger, return the state unchanged.
-- Do not invent details that were not stated in the message.`,
-        updateHint: (slot) => `Hint: There are multiple slots - you only have to concentrate on ${slot} though. Legwear covers the leg above the ankle, Footwear the foot. An accessory typically refers to an item worn to complement or enhance a garment or appearance.`,
         slotUpdateStateDescription: "The full new state of this slot after applying the message. Comma-separated list of items if multiple. Use \"none\" if nothing is worn in this slot.",
         slotDefaultSentinel: () => "none",
         gateDescription: "True if the message contains information about what a character is wearing, or a change to it.",
+        gateSummary: "what a character is wearing, or a change to it.",
         // The only area where "none" is a value rather than an absence: a bare
         // slot is what the scene is about, so it has to reach the prompt.
         emptyValue: "none",
@@ -84,41 +84,43 @@ change about the slot, mark it false.`,
         label: "Body",
         icon: "fa-heart-pulse",
         slots: PHYSICAL_STATE_SLOTS,
-        triggerMode: "always",
         seedField: "target",
         emptyValue: "",
-        diffIntroParagraph: `For each slot below, determine whether the message contains any
-information about it. Slots track the character's body and what
-currently limits their ability to act.`,
-        diffTrueFalseLine: "If you find any information for a slot, mark it true. Otherwise mark it false.",
+        groupDescription: "Body slots track the character's body and what currently limits their ability to act.",
+        diffRules: [
+            "For each slot, determine whether the message contains any information about it.",
+            "If you find any information for a slot, mark it true. Otherwise mark it false.",
+        ],
+        updateRules: [
+            "If the message adds new information, incorporate it into the existing state.",
+            `If the message explicitly resolves or ends what the slot describes, output "none".`,
+            "If nothing actually changed despite the trigger, return the state unchanged.",
+            "Do not invent details that were not stated in the message.",
+        ],
         diffReasoningDescription: "One short clause per slot (condition, constraint, bodyChanges, in that order), noting whether the message contains information about it and why.",
         slotDescriptions: {
             condition: "True if the message contains information about the character's temporary bodily state — injury, illness, exhaustion, hunger, or intoxication.",
             constraint: "True if the message contains information about what currently limits the character's freedom to act — being restrained, confined, guarded, or under an obligation they cannot simply walk away from.",
             bodyChanges: "True if the message establishes a lasting change to the character's body compared to how they are described in their profile, whether deliberate (a tattoo, a piercing) or not (weight, a scar, visible aging).",
         },
-        slotLabel: (slot) => `Body slot "${slot}".`,
-        updateRules: `- If the message adds new information, incorporate it into the existing state.
-- If the message explicitly resolves or ends what the slot describes, output "none".
-- If nothing actually changed despite the trigger, return the state unchanged.
-- Do not invent details that were not stated in the message.`,
         slotOverrides: {
             // Only slot that stores a delta rather than a value, so it is the
             // only one whose update call needs the profile it is a delta against.
             bodyChanges: {
-                context: () => `Profile description of the tracked character:\n"""\n${readTargetProfileText()}\n"""`,
-                updateRules: `- Output ONLY how the body now differs from the profile above. Never repeat
-  anything the profile already says.
-- If the message establishes a new lasting change, append it to the existing
-  entries, separated by "; ".
-- Keep existing entries unless the message explicitly reverses one.
-- If nothing lasting changed, return the entries unchanged.
-- Output "none" if the body does not differ from the profile at all.`,
+                profileContext: () => readTargetProfileText(),
+                updateRules: [
+                    "Output ONLY how the body now differs from the profile above. Never repeat anything the profile already says.",
+                    `If the message establishes a new lasting change, append it to the existing entries, separated by "; ".`,
+                    "Keep existing entries unless the message explicitly reverses one.",
+                    "If nothing lasting changed, return the entries unchanged.",
+                    `Output "none" if the body does not differ from the profile at all.`,
+                ],
             },
         },
         slotUpdateStateDescription: "The new value of this slot after applying the update rules above.",
         slotDefaultSentinel: () => "none",
         gateDescription: "True if the message contains information about a character's bodily condition, what limits their freedom to act, or a lasting change to their body.",
+        gateSummary: "a character's bodily condition, what limits their freedom to act, or a lasting change to their body.",
     },
     situational: {
         scope: "scene",
@@ -126,32 +128,34 @@ currently limits their ability to act.`,
         label: "Scene",
         icon: "fa-location-dot",
         slots: SITUATIONAL_SLOTS,
-        triggerMode: "always",
         seedField: "scenario",
         emptyValue: "",
-        diffIntroParagraph: `For each slot below, determine whether the message contains any
-information about it. Slots describe the scene the characters are
-currently in - where they are, who is with them, and when it is -
-not their actions or dialogue.`,
-        diffTrueFalseLine: "If you find any information for a slot, mark it true. Otherwise mark it false.",
+        groupDescription: "Scene slots describe the scene the characters are currently in - where they are, who is with them, and when it is - not their actions or dialogue.",
+        diffRules: [
+            "For each slot, determine whether the message contains any information about it.",
+            "If you find any information for a slot, mark it true. Otherwise mark it false.",
+        ],
+        updateRules: [
+            "If the message establishes new information, incorporate it into the state.",
+            "If the message explicitly changes this aspect of the scene, replace the state with the new value.",
+            "If nothing actually changed despite the trigger, return the state unchanged.",
+            "Do not invent or infer details that were not explicitly stated.",
+        ],
         diffReasoningDescription: "One short clause per slot (location, presentPeople, timeOfDay, in that order), noting whether the message contains information about it and why.",
         slotDescriptions: {
             location: "True if the message states or changes where the characters are, or how private, exposed, or safe that place is.",
             presentPeople: "True if the message states that someone is present in the scene, arrives, or leaves.",
             timeOfDay: "True if the message explicitly states or unambiguously implies the time of day.",
         },
-        slotLabel: (slot) => `Scene slot "${slot}".`,
-        updateRules: `- If the message establishes new information, incorporate it into the state.
-- If the message explicitly changes this aspect of the scene, replace the state with the new value.
-- If nothing actually changed despite the trigger, return the state unchanged.
-- Do not invent or infer details that were not explicitly stated.`,
         slotOverrides: {
             presentPeople: {
-                updateRules: `- Write out the full list of everyone present after applying the message.
-- Keep everyone who was already present unless the message says they left.
-- Add anyone the message says arrived or is present.
-- Separate names with ", ".
-- Do not invent people who were not named.`,
+                updateRules: [
+                    "Write out the full list of everyone present after applying the message.",
+                    "Keep everyone who was already present unless the message says they left.",
+                    "Add anyone the message says arrived or is present.",
+                    `Separate names with ", ".`,
+                    "Do not invent people who were not named.",
+                ],
             },
         },
         // A scene cut ("she drove home") changes the cast without naming anyone,
@@ -165,6 +169,7 @@ not their actions or dialogue.`,
             return [context.name1, context.name2].filter(Boolean).join(", ") || "none";
         },
         gateDescription: "True if the message contains information about where the characters are, who is with them, or what time it is.",
+        gateSummary: "where the characters are, who is with them, or what time it is.",
     },
 };
 
@@ -176,20 +181,81 @@ function readTargetProfileText() {
     return (ensureChatState().target === "user" ? fields.persona : fields.description) || "";
 }
 
-function buildAreaDiffPrompt(config, message) {
+// The message goes last, after the rules, with its speaker on the line above
+// it - the model reads the whole assignment before it ever sees the text it
+// has to apply the assignment to.
+function buildPromptDocument(sections, speaker, message) {
+    const body = sections
+        .filter((section) => section && section.content)
+        .map((section) => `${section.heading}\n${section.content}`)
+        .join("\n\n");
+    return `${body}\n---\n${speaker ? `${speaker}\n` : ""}${message}`;
+}
+
+function bulletList(items) {
+    return items.filter(Boolean).map((item) => `- ${item}`).join("\n");
+}
+
+function qualifiedSlotName(config, slot) {
+    return `"${config.label} / ${slot}"`;
+}
+
+// Naming the sheet's owner is what tells the model whose state it is filling
+// in: with two people in a scene "she" is otherwise a guess, and extraction
+// runs on every message regardless of who wrote it.
+function buildSheetIntro(config, focusPhrase) {
+    if (config.scope !== "character") {
+        return `Your Job is to extract information for the scene sheet of an ongoing roleplay. The scene sheet is slot-based and you only have to focus on ${focusPhrase}.`;
+    }
+    return `Your Job is to extract information for the character sheet for ${readTargetName()}. The character sheet is slot-based and you only have to focus on ${focusPhrase}.`;
+}
+
+function buildAttributionRule(config) {
+    if (config.scope !== "character") {
+        return null;
+    }
+    const target = readTargetName();
+    return `Only information about ${target} counts - information about anyone else does not.`;
+}
+
+function buildHintSection(config) {
+    return {
+        heading: "## Additional hints",
+        content: bulletList([
+            ...(config.hints ?? []),
+            "Reasoning is just for debug, so one concise sentence is enough.",
+        ]),
+    };
+}
+
+function buildAreaDiffPrompt(config, message, speaker) {
     const exampleShape = JSON.stringify({
         reasoning: "...",
         ...Object.fromEntries(config.slots.map((slot) => [slot, false])),
     });
     const countPhrase = config.slots.length === 1 ? "the boolean" : `the ${config.slots.length} booleans`;
 
-    return [
-        config.diffIntroParagraph,
-        config.diffTrueFalseLine,
-        "Reasoning is just for debug, so one concise sentence is enough.",
-        `Message:\n"""\n${message}\n"""`,
-        `Respond with ONLY a JSON object (no markdown code fence). Fill in\n"reasoning" first, then ${countPhrase}, using exactly this shape:\n${exampleShape}`,
-    ].join("\n\n");
+    return buildPromptDocument([
+        { heading: "# Task Description", content: buildSheetIntro(config, "one specific group of slots") },
+        {
+            heading: "## Slots",
+            content: `Your current task is to work on the following slots: ${config.slots.map((slot) => qualifiedSlotName(config, slot)).join(", ")}.`,
+        },
+        { heading: "## Slot description", content: config.groupDescription },
+        {
+            heading: "## Rules",
+            content: bulletList([
+                ...config.diffRules,
+                buildAttributionRule(config),
+                "There are multiple groups of slots on the sheet. You MUST only concentrate only on your assigned group.",
+            ]),
+        },
+        buildHintSection(config),
+        {
+            heading: "## Output format",
+            content: `Respond with ONLY a JSON object (no markdown code fence). Fill in\n"reasoning" first, then ${countPhrase}, using exactly this shape:\n${exampleShape}`,
+        },
+    ], speaker, message);
 }
 
 function buildAreaDiffSchema(config) {
@@ -207,25 +273,34 @@ function buildAreaDiffSchema(config) {
     };
 }
 
-function buildAreaSlotUpdatePrompt(config, slot, currentState, message) {
+function buildAreaSlotUpdatePrompt(config, slot, currentState, message, speaker) {
     const overrides = config.slotOverrides?.[slot] ?? {};
-    const blocks = [config.slotLabel(slot)];
-    if (overrides.context) {
-        blocks.push(overrides.context());
-    }
-    blocks.push(
-        `Current state of ${slot}: "${currentState}"`,
-        `Message: "${message}"`,
-        `Update the ${slot} state based on this message.\n${overrides.updateRules ?? config.updateRules}`,
-    );
-    if (config.updateHint) {
-        blocks.push(config.updateHint(slot));
-    }
-    blocks.push(
-        "Reasoning is just for debug, so one concise sentence is enough.",
-        "Respond with ONLY a JSON object (no markdown code fence). Fill in\n\"reasoning\" first, then \"state\", using exactly this shape:\n{\"reasoning\": \"...\", \"state\": \"...\"}.",
-    );
-    return blocks.join("\n\n");
+
+    return buildPromptDocument([
+        { heading: "# Task Description", content: buildSheetIntro(config, "one specific slot") },
+        { heading: "## Slot", content: `Your current task is to work on the following slot: ${qualifiedSlotName(config, slot)}.` },
+        { heading: "## Slot description", content: config.groupDescription },
+        overrides.profileContext
+            ? { heading: "## Character profile", content: `"""\n${overrides.profileContext()}\n"""` }
+            : null,
+        {
+            heading: "## Current state",
+            content: `The Current state of the slot ${qualifiedSlotName(config, slot)} is: "${currentState}"`,
+        },
+        {
+            heading: "## Rules",
+            content: bulletList([
+                ...(overrides.updateRules ?? config.updateRules),
+                buildAttributionRule(config),
+                "There are multiple slots on the sheet. You MUST only concentrate only on your assigned slot.",
+            ]),
+        },
+        buildHintSection(config),
+        {
+            heading: "## Output format",
+            content: `Respond with ONLY a JSON object (no markdown code fence). Fill in\n"reasoning" first, then "state", using exactly this shape:\n{"reasoning": "...", "state": "..."}.`,
+        },
+    ], speaker, message);
 }
 
 function buildAreaSlotUpdateSchema(config) {
@@ -243,20 +318,41 @@ function buildAreaSlotUpdateSchema(config) {
     };
 }
 
-function buildAreaGatePrompt(eligibleAreaKeys, message) {
+// No tracked character here: the gate only decides whether a turn touches an
+// area at all, never what the value would be, so naming an owner would pull it
+// into an extraction it is not doing - and Scene has no owner to name.
+function buildAreaGatePrompt(eligibleAreaKeys, message, speaker) {
     const exampleShape = JSON.stringify({
         reasoning: "...",
         ...Object.fromEntries(eligibleAreaKeys.map((key) => [key, false])),
     });
     const countPhrase = eligibleAreaKeys.length === 1 ? "the boolean" : `the ${eligibleAreaKeys.length} booleans`;
 
-    return [
-        "For each area below, determine whether the message contains any\ninformation relevant to it.",
-        "If you find any information relevant to an area, mark it true.\nOtherwise mark it false.",
-        "Reasoning is just for debug, so one concise sentence is enough.",
-        `Message:\n"""\n${message}\n"""`,
-        `Respond with ONLY a JSON object (no markdown code fence). Fill in\n"reasoning" first, then ${countPhrase}, using exactly this shape:\n${exampleShape}`,
-    ].join("\n\n");
+    return buildPromptDocument([
+        {
+            heading: "# Task Description",
+            content: "Your Job is to decide which parts of a roleplay sheet a message is relevant to. The sheet is grouped into areas, and you only decide whether an area is affected at all, never how.",
+        },
+        {
+            heading: "## Areas",
+            content: bulletList(eligibleAreaKeys.map((key) => {
+                const config = AREA_SLOT_CONFIGS[key];
+                return `"${config.label}": ${config.gateSummary}`;
+            })),
+        },
+        {
+            heading: "## Rules",
+            content: bulletList([
+                "If you find any information relevant to an area, mark it true. Otherwise mark it false.",
+                "You MUST NOT extract any values. Deciding relevance is the whole task.",
+            ]),
+        },
+        { heading: "## Additional hints", content: bulletList(["Reasoning is just for debug, so one concise sentence is enough."]) },
+        {
+            heading: "## Output format",
+            content: `Respond with ONLY a JSON object (no markdown code fence). Fill in\n"reasoning" first, then ${countPhrase}, using exactly this shape:\n${exampleShape}`,
+        },
+    ], speaker, message);
 }
 
 function buildAreaGateSchema(eligibleAreaKeys) {
@@ -575,12 +671,12 @@ async function sendJsonSchemaRequest(profileId, schemaName, schema, prompt, maxT
     return parseJsonResponse(response.content);
 }
 
-async function runAreaGate(profileId, eligibleAreaKeys, message) {
+async function runAreaGate(profileId, eligibleAreaKeys, message, speaker) {
     if (eligibleAreaKeys.length === 0) {
         return [];
     }
 
-    const prompt = buildAreaGatePrompt(eligibleAreaKeys, message);
+    const prompt = buildAreaGatePrompt(eligibleAreaKeys, message, speaker);
     const schema = buildAreaGateSchema(eligibleAreaKeys);
 
     try {
@@ -611,7 +707,7 @@ function expandTriggeredSlots(config, changedSlots) {
     return config.slots.filter((slot) => expanded.has(slot));
 }
 
-async function runAreaExtraction(areaKey, message) {
+async function runAreaExtraction(areaKey, message, speaker) {
     const settings = ensureSettings();
     const profileId = settings.connectionProfile;
     if (!profileId) {
@@ -623,8 +719,11 @@ async function runAreaExtraction(areaKey, message) {
     const areaSettings = settings.state.areas[areaKey];
     const area = ensureChatState().areas[areaKey];
     const diffPrompt = areaSettings.useDefaultPrompt
-        ? buildAreaDiffPrompt(config, message)
-        : areaSettings.customPrompt.replaceAll("{{message}}", message);
+        ? buildAreaDiffPrompt(config, message, speaker)
+        : areaSettings.customPrompt
+            .replaceAll("{{message}}", message)
+            .replaceAll("{{target}}", readTargetName())
+            .replaceAll("{{speaker}}", speaker || "");
     const diffSchema = buildAreaDiffSchema(config);
 
     let diff;
@@ -644,7 +743,7 @@ async function runAreaExtraction(areaKey, message) {
     const slotUpdateSchema = buildAreaSlotUpdateSchema(config);
     await Promise.all(changedSlots.map(async (slot) => {
         const currentState = area.slots[slot] || config.slotDefaultSentinel(slot);
-        const updatePrompt = buildAreaSlotUpdatePrompt(config, slot, currentState, message);
+        const updatePrompt = buildAreaSlotUpdatePrompt(config, slot, currentState, message, speaker);
 
         try {
             const update = await sendJsonSchemaRequest(
@@ -668,6 +767,13 @@ async function runAreaExtraction(areaKey, message) {
 
 const STATE_INJECT_ID = "psychograph_state";
 const STATE_INJECT_HEADING = "## Current state information";
+
+// Whoever wrote a message may be describing someone else, so the speaker is
+// an anchor for attribution, never a filter on which messages are read.
+function readMessageSpeaker(message) {
+    const context = getContext();
+    return message?.name || (message?.is_user ? context.name1 : context.name2) || "";
+}
 
 function readTargetName() {
     const context = getContext();
@@ -960,21 +1066,7 @@ async function flushCogneeRecallInject() {
     await getContext().executeSlashCommandsWithOptions(`/flushinject ${COGNEE_RECALL_INJECT_ID} |`);
 }
 
-function isAreaTriggerRelevant(areaKey, eventType) {
-    const config = AREA_SLOT_CONFIGS[areaKey];
-    if (config.triggerMode === "always") {
-        return eventType === event_types.MESSAGE_SENT
-            || eventType === event_types.MESSAGE_RECEIVED;
-    }
-
-    const target = ensureChatState().target;
-    if (target === "char") {
-        return eventType === event_types.MESSAGE_RECEIVED;
-    }
-    return eventType === event_types.MESSAGE_SENT;
-}
-
-function handleChatMessageEvent(eventType) {
+function handleChatMessageEvent() {
     return async function () {
         const settings = ensureSettings();
         if (!settings.enabled) {
@@ -982,7 +1074,7 @@ function handleChatMessageEvent(eventType) {
         }
 
         const eligibleAreaKeys = Object.keys(AREA_SLOT_CONFIGS).filter((key) =>
-            settings.state.areas[key].enabled && isAreaTriggerRelevant(key, eventType));
+            settings.state.areas[key].enabled);
         if (eligibleAreaKeys.length === 0) {
             return;
         }
@@ -999,15 +1091,16 @@ function handleChatMessageEvent(eventType) {
             return;
         }
 
-        const gatedAreaKeys = await runAreaGate(profileId, eligibleAreaKeys, lastMessage.mes);
-        await Promise.all(gatedAreaKeys.map((areaKey) => runAreaExtraction(areaKey, lastMessage.mes)));
+        const speaker = readMessageSpeaker(lastMessage);
+        const gatedAreaKeys = await runAreaGate(profileId, eligibleAreaKeys, lastMessage.mes, speaker);
+        await Promise.all(gatedAreaKeys.map((areaKey) => runAreaExtraction(areaKey, lastMessage.mes, speaker)));
         await refreshStateInject();
     };
 }
 
 function bindChatEvents() {
-    eventSource.on(event_types.MESSAGE_SENT, handleChatMessageEvent(event_types.MESSAGE_SENT));
-    eventSource.on(event_types.MESSAGE_RECEIVED, handleChatMessageEvent(event_types.MESSAGE_RECEIVED));
+    eventSource.on(event_types.MESSAGE_SENT, handleChatMessageEvent());
+    eventSource.on(event_types.MESSAGE_RECEIVED, handleChatMessageEvent());
 
     // Not bound on MESSAGE_SWIPED: it fires before a new swipe's text is
     // generated, while chat[].mes still holds the previous swipe's content.
@@ -1115,7 +1208,7 @@ async function rerunAreaExtractionNow(areaKey) {
 
     const config = AREA_SLOT_CONFIGS[areaKey];
     toastr.info(`Analyzing ${config.label.toLowerCase()} for the last message…`, "Psychograph");
-    await runAreaExtraction(areaKey, lastMessage.mes);
+    await runAreaExtraction(areaKey, lastMessage.mes, readMessageSpeaker(lastMessage));
 }
 
 async function initAreaFromDescription(areaKey) {

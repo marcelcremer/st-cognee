@@ -82,16 +82,22 @@ the same ephemeral `position=after` inject the Cognee recall uses. Character
 areas are labelled with the tracked character's name, since "top: blue blouse"
 alone does not say whose.
 
+**Prompt shape.** All three stages render the same markdown document: a task
+description naming whose sheet is being filled in, the assignment (one slot, one
+group of slots, or the list of areas), the rules, the hints, the output format —
+and then the message last, after a `---`, with its speaker on the line above it.
+Naming the sheet's owner is what lets extraction run on every message: the
+earlier design restricted it by who wrote the message, which is the wrong axis,
+since information about Jacob is information about Jacob no matter who typed it.
+The gate is the exception and names no owner — it decides only whether a turn
+touches an area at all, never what the value would be.
+
 **Open issues:**
 - Extraction runs on the newest message, which a swipe can still change, so a
   re-generated message is extracted twice on top of already-updated state.
   Extracting the *predecessor* instead — always settled — plus a once-only
   marker per message would close this, and with it deletion and editing of the
   last message.
-- No prompt names the tracked character, so with two people in a scene the
-  model has to guess whose clothes it is filling in. Until it does, the trigger
-  is restricted by who wrote the message, which is the wrong axis: information
-  about Jacob is information about Jacob no matter who typed it.
 - One global slot set, so group chats cannot be represented.
 
 ## 2. Core Memories

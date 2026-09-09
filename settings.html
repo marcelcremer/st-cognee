@@ -41,7 +41,7 @@
                                 <option value="char">Character</option>
                                 <option value="user">User</option>
                             </select>
-                            <small>Whether tracked state reflects the character or the user persona. Also decides which chat event triggers extraction (character message/swipe vs. user message).</small>
+                            <small>Whether tracked state reflects the character or the user persona. Extraction runs on every message either way — this decides whose state the character-scoped areas track.</small>
                         </div>
                     </div>
 
@@ -59,7 +59,7 @@
                                 <input id="psychograph_state_clothes_default_prompt" type="checkbox" />
                                 Default prompt
                             </label>
-                            <textarea id="psychograph_state_clothes_custom_prompt" class="text_pole textarea_compact" rows="4" placeholder="Custom extraction prompt for this area, use {{message}} for the message being analyzed"></textarea>
+                            <textarea id="psychograph_state_clothes_custom_prompt" class="text_pole textarea_compact" rows="4" placeholder="Custom extraction prompt for this area, use {{message}} for the message being analyzed, {{target}} for the tracked character, {{speaker}} for who wrote the message"></textarea>
 
                             <label>Current state</label>
                             <label for="psychograph_state_clothes_slot_top">Top</label>
@@ -95,7 +95,7 @@
                                 <input id="psychograph_state_physical_state_default_prompt" type="checkbox" />
                                 Default prompt
                             </label>
-                            <textarea id="psychograph_state_physical_state_custom_prompt" class="text_pole textarea_compact" rows="4" placeholder="Custom extraction prompt for this area"></textarea>
+                            <textarea id="psychograph_state_physical_state_custom_prompt" class="text_pole textarea_compact" rows="4" placeholder="Custom extraction prompt for this area, use {{message}} for the message being analyzed, {{target}} for the tracked character, {{speaker}} for who wrote the message"></textarea>
 
                             <label>Current state</label>
                             <label for="psychograph_state_physical_state_slot_condition">Condition</label>
@@ -121,7 +121,7 @@
                                 <input id="psychograph_state_situational_default_prompt" type="checkbox" />
                                 Default prompt
                             </label>
-                            <textarea id="psychograph_state_situational_custom_prompt" class="text_pole textarea_compact" rows="4" placeholder="Custom extraction prompt for this area"></textarea>
+                            <textarea id="psychograph_state_situational_custom_prompt" class="text_pole textarea_compact" rows="4" placeholder="Custom extraction prompt for this area, use {{message}} for the message being analyzed, {{target}} for the tracked character, {{speaker}} for who wrote the message"></textarea>
 
                             <label>Current state</label>
                             <label for="psychograph_state_situational_slot_location">Location</label>
