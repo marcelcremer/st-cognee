@@ -14,26 +14,85 @@ Three storage types with different access patterns — not a unified solution, b
 
 ## 1. State
 
-**Goal:** Current snapshot (location, present people, emotion, possibly clothing/physical state) — always only the latest truth, no history.
+**Goal:** Current snapshot of what is true right now — always the latest truth,
+no history.
 
-**Extraction:** One LLM call per message, a pure observation task without the previous state in context:
+**What belongs here.** The criterion is not "does it change" but:
 
-```
-Describe the current state based on the following message.
-Use the exact format. If the message contains no info for a
-property, mark it as false (not: guess).
-```
+> Inject only what the roleplay model cannot correctly infer from the
+> context it can already see.
 
-Example schema: `{ location, presentPeople: [], currentEmotion }`
+Clothing qualifies: the blouse was mentioned 300 messages ago and has fallen
+out of the window. A mood does not: it is derivable from the last three
+messages, and as an injected *fact* it stops informing and starts overriding —
+a character the prompt asserts is angry cannot be softened by a pampering
+attempt, which breaks the scene rather than grounding it. State that the model
+would have got right on its own is not neutral, it is harmful.
 
-**Merge:** Purely mechanical, no second LLM call. Any field with value `false` is ignored (= "no new info, keep the old value"), every other field overwrites the old value. No diff judgment by a model needed → eliminates the main source of drift that occurred with reproducing free text (the old Guides extension).
+**Layout (14 slots in 3 areas).** Clothes stays fine-grained because layering
+is what the model loses first — collapsing "blue blouse, grey blazer" into one
+field loses that the blouse is underneath.
+
+| Area | Slots |
+|---|---|
+| Clothes | top, bottom, underwear, legwear, footwear, accessories, hair, makeup |
+| Body | condition, constraint, bodyChanges |
+| Scene | location, presentPeople, timeOfDay |
+
+- `condition` is the *temporary* bodily state; anything lasting goes to
+  `bodyChanges`. A fresh bruise is a condition, the scar it leaves is a change.
+- `constraint` is what limits the ability to act — rope, confinement, a
+  watcher, an obligation. Not the body itself, which `condition` holds.
+- `bodyChanges` stores a **delta against the character card**, not an absolute.
+  The card stays the only source for the baseline, so the two cannot drift
+  apart, and the slot is empty for as long as the character still matches their
+  description.
+- `location` carries both the place and how exposed it is, because a character's
+  sense of safety drives their behaviour and is inseparable from where they are.
+
+**Extraction: three stages, coarse to fine.** Not because the stages carry
+different information — they overlap — but because they carry different
+*difficulty*. "Is this message about clothing?" is a question a 4B answers
+reliably; "which of these fourteen heterogeneous slots changed?" is not.
+Narrowing in steps is what makes a small model dependable, and the cost of the
+extra stage is one call that can suppress three.
+
+1. **Area gate** — one call, one boolean per active area.
+2. **Area diff** — one call per gated area, one boolean per slot.
+3. **Slot update** — one call per triggered slot, given the current value and
+   the message.
+
+A failed gate extracts nothing rather than everything: a broken gate should not
+produce the most expensive and least informed run of the pipeline.
+
+**Merge.** Stage 3 sees the current value, so it can produce the new value
+directly. An earlier design had the extraction run observation-only, without the
+previous state, which is why it needed sentinels for "no info" and an explicit
+`peopleLeaving` delta to remove someone from the scene. Neither is necessary
+here: the model has both sides in front of it and writes the resulting list,
+removals included.
+
+**Empty values.** `""` everywhere, for every reason — never established, user
+cleared it, nothing there. Empty slots are not injected at all. The single
+exception is Clothes, where `"none"` is a stored, injected value: an empty
+clothing slot is the information, not its absence.
+
+**Injection.** The snapshot is injected as `## Current state information`, via
+the same ephemeral `position=after` inject the Cognee recall uses. Character
+areas are labelled with the tracked character's name, since "top: blue blouse"
+alone does not say whose.
 
 **Open issues:**
-- Sentinel collision: `false` for "no info" vs. genuine negative booleans should be separated (`null` instead of `false` for "no info").
-- Missing removal case: when a person leaves the scene, "not mentioned" isn't enough — needs an explicit delta field (e.g. `peopleLeaving: []`), otherwise people stay in the list forever.
-- Where possible: use JSON schema/grammar constraints instead of a retry loop (SillyTavern's TextGen settings support `json_schema`/`grammar_string`, koboldcpp turns this into grammar-constrained sampling server-side) — eliminates malformed JSON structurally instead of just making it statistically less likely.
-
----
+- Extraction runs on the newest message, which a swipe can still change, so a
+  re-generated message is extracted twice on top of already-updated state.
+  Extracting the *predecessor* instead — always settled — plus a once-only
+  marker per message would close this, and with it deletion and editing of the
+  last message.
+- No prompt names the tracked character, so with two people in a scene the
+  model has to guess whose clothes it is filling in. Until it does, the trigger
+  is restricted by who wrote the message, which is the wrong axis: information
+  about Jacob is information about Jacob no matter who typed it.
+- One global slot set, so group chats cannot be represented.
 
 ## 2. Core Memories
 

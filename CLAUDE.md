@@ -4,21 +4,27 @@ Guidance for Claude Code (or any agent) working in this repository.
 
 ## Project
 
-`st-cognee` is a SillyTavern extension implementing a three-tier memory
+`st-psychograph` is a SillyTavern extension implementing a layered memory
 system for roleplay chats:
 
-1. **State** — a mutable snapshot (location, present people, emotion, …),
-   overwritten on every message.
-2. **Core Memories** — an append-only timeline of significant moments, never
-   edited or deleted.
+1. **State** — a mutable snapshot (clothing, body, scene), overwritten on
+   every message. The only layer that exists today: 14 slots in 3 areas,
+   extracted by a gate -> per-area diff -> per-slot update pipeline and
+   injected as `## Current state information`.
+2. **Dispositions / Episodes** — what a character has come to believe, and the
+   events behind it. Designed, not built.
 3. **Lore/Graph** — a knowledge graph of relationships between characters,
    places, and events, backed by [Cognee](https://www.cognee.ai/).
 
-The full architecture rationale (why three separate stores, extraction
-strategy per layer, known open issues and risks) lives in
-[`docs/memory-system.md`](docs/memory-system.md). Treat it as the source of
-truth for *why* each layer works the way it does — read it before making
-design decisions on any of the three layers.
+Two documents carry the rationale, and both are the source of truth for
+*why* — read them before making design decisions on any layer:
+
+- [`docs/memory-system.md`](docs/memory-system.md) — the layers as built,
+  including what belongs in State and what deliberately does not.
+- [`docs/memory-architecture.md`](docs/memory-architecture.md) — the target
+  picture: the four layers, why retrieval runs through a disposition index
+  rather than over raw chat, and why significance can only accumulate rather
+  than be decided at write time.
 
 ## Cognee API reference
 

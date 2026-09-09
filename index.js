@@ -9,20 +9,21 @@ const extensionFolderPath = `scripts/extensions/third-party/${extensionName}`;
 const STATE_AREAS = [
     { key: "clothes", id: "clothes" },
     { key: "physicalState", id: "physical_state" },
-    { key: "stateOfMind", id: "state_of_mind" },
     { key: "situational", id: "situational" },
-    { key: "expectations", id: "expectations" },
 ];
 
 const CLOTHING_SLOTS = ["top", "bottom", "underwear", "legwear", "footwear", "accessories", "hair", "makeup"];
-const PHYSICAL_STATE_SLOTS = ["build", "health", "marks", "restraints", "mood"];
-const STATE_OF_MIND_SLOTS = ["beliefs", "trauma", "conditioning", "triggers", "alters", "influences"];
-const SITUATIONAL_SLOTS = ["location", "features", "timeOfDay", "weather", "privacyRisk", "ambient"];
-const EXPECTATIONS_SLOTS = ["rules"];
+const PHYSICAL_STATE_SLOTS = ["condition", "constraint", "bodyChanges"];
+const SITUATIONAL_SLOTS = ["location", "presentPeople", "timeOfDay"];
 
 const AREA_DIFF_MAX_TOKENS = 250;
 const AREA_SLOT_UPDATE_MAX_TOKENS = 200;
 const AREA_GATE_MAX_TOKENS = 200;
+
+// Values a model reaches for when a slot holds nothing. Outside Clothes these
+// are an absence and must not reach the prompt; inside Clothes "none" is itself
+// the information (a bare slot is what the scene is about), see emptyValue.
+const EMPTY_SLOT_ANSWERS = new Set(["none", "nothing", "n/a", "na", "unknown", "not established", "-", "keine", "nichts"]);
 
 // Per-area config for the generic diff -> per-slot-update pipeline. Clothes'
 // own prompt *wording* below is copied verbatim from the original
@@ -34,6 +35,7 @@ const AREA_GATE_MAX_TOKENS = 200;
 // with the newer areas' leaner style.
 const AREA_SLOT_CONFIGS = {
     clothes: {
+        scope: "character",
         id: "clothes",
         label: "Clothes",
         icon: "fa-shirt",
@@ -72,126 +74,107 @@ change about the slot, mark it false.`,
         slotUpdateStateDescription: "The full new state of this slot after applying the message. Comma-separated list of items if multiple. Use \"none\" if nothing is worn in this slot.",
         slotDefaultSentinel: () => "none",
         gateDescription: "True if the message contains information about what a character is wearing, or a change to it.",
+        // The only area where "none" is a value rather than an absence: a bare
+        // slot is what the scene is about, so it has to reach the prompt.
+        emptyValue: "none",
     },
     physicalState: {
+        scope: "character",
         id: "physical_state",
-        label: "Physical State",
+        label: "Body",
         icon: "fa-heart-pulse",
         slots: PHYSICAL_STATE_SLOTS,
         triggerMode: "always",
         seedField: "target",
-        diffIntroParagraph: `For each physical condition slot, determine whether the message below
-contains any information about it. Slots represent a distinct aspect of
-physical or momentary condition, not a diagnosis.`,
+        emptyValue: "",
+        diffIntroParagraph: `For each slot below, determine whether the message contains any
+information about it. Slots track the character's body and what
+currently limits their ability to act.`,
         diffTrueFalseLine: "If you find any information for a slot, mark it true. Otherwise mark it false.",
-        diffReasoningDescription: "One short clause per physical condition slot (build, health, marks, restraints, mood, in that order), noting whether the message contains information about it and why.",
+        diffReasoningDescription: "One short clause per slot (condition, constraint, bodyChanges, in that order), noting whether the message contains information about it and why.",
         slotDescriptions: {
-            build: "True if the message contains information about bodyweight or physical build.",
-            health: "True if the message contains information about illness, exhaustion, hunger, thirst, intoxication, or injury status.",
-            marks: "True if the message contains information about visible marks on the skin.",
-            restraints: "True if the message contains information about physical restraint, or the removal of one.",
-            mood: "True if the message contains information about the character's current momentary emotional or mental condition, as distinct from long-term psychological state.",
+            condition: "True if the message contains information about the character's temporary bodily state — injury, illness, exhaustion, hunger, or intoxication.",
+            constraint: "True if the message contains information about what currently limits the character's freedom to act — being restrained, confined, guarded, or under an obligation they cannot simply walk away from.",
+            bodyChanges: "True if the message establishes a lasting change to the character's body compared to how they are described in their profile, whether deliberate (a tattoo, a piercing) or not (weight, a scar, visible aging).",
         },
-        slotLabel: (slot) => `Physical condition slot "${slot}".`,
+        slotLabel: (slot) => `Body slot "${slot}".`,
         updateRules: `- If the message adds new information, incorporate it into the existing state.
-- If the message explicitly resolves or ends the condition, output "none".
+- If the message explicitly resolves or ends what the slot describes, output "none".
 - If nothing actually changed despite the trigger, return the state unchanged.
 - Do not invent details that were not stated in the message.`,
-        slotUpdateStateDescription: "The new value of this slot after applying the update rules above.",
-        slotDefaultSentinel: (slot) => (slot === "build" || slot === "mood" ? "unknown" : "none"),
-        gateDescription: "True if the message contains information about a character's physical or momentary bodily condition.",
-    },
-    stateOfMind: {
-        id: "state_of_mind",
-        label: "State of Mind",
-        icon: "fa-brain",
-        slots: STATE_OF_MIND_SLOTS,
-        triggerMode: "target",
-        seedField: "target",
-        diffIntroParagraph: `For each mind-state slot, determine whether the message below reveals
-any new, lasting psychological information about it. Slots track
-persistent psychological changes, not momentary mood or behavior.`,
-        diffTrueFalseLine: "If you find any information for a slot, mark it true. Otherwise mark it false.",
-        diffReasoningDescription: "One short clause per mind-state slot (beliefs, trauma, conditioning, triggers, alters, influences, in that order), noting whether the message reveals information about it and why.",
-        slotDescriptions: {
-            beliefs: "True if the message reveals something the character has come to believe or feel about themself as a person.",
-            trauma: "True if the message reveals a specific past event that left a lasting emotional wound.",
-            conditioning: "True if the message reveals a trained behavioral pattern or association built up over time, not tied to a single event.",
-            triggers: "True if the message reveals a specific stimulus that provokes a near-involuntary reaction.",
-            alters: "True if the message reveals a distinct alternate personality or identity.",
-            influences: "True if the message reveals a temporary external factor currently affecting the character's psychological state.",
+        slotOverrides: {
+            // Only slot that stores a delta rather than a value, so it is the
+            // only one whose update call needs the profile it is a delta against.
+            bodyChanges: {
+                context: () => `Profile description of the tracked character:\n"""\n${readTargetProfileText()}\n"""`,
+                updateRules: `- Output ONLY how the body now differs from the profile above. Never repeat
+  anything the profile already says.
+- If the message establishes a new lasting change, append it to the existing
+  entries, separated by "; ".
+- Keep existing entries unless the message explicitly reverses one.
+- If nothing lasting changed, return the entries unchanged.
+- Output "none" if the body does not differ from the profile at all.`,
+            },
         },
-        slotLabel: (slot) => `Mind-state slot "${slot}" (a persistent psychological record, not a momentary state).`,
-        updateRules: `- Keep every existing entry unless the message explicitly contradicts or resolves it.
-- If the message establishes a new entry, append it to the existing entries, separated by "; ".
-- If nothing actually new or changed, return the entries unchanged.
-- Do not invent entries that were not explicitly established.
-- Use "none" only if there are no entries at all.`,
-        slotUpdateStateDescription: "The full new value of this slot after applying the update rules above.",
+        slotUpdateStateDescription: "The new value of this slot after applying the update rules above.",
         slotDefaultSentinel: () => "none",
-        gateDescription: "True if the message reveals lasting psychological information about a character.",
+        gateDescription: "True if the message contains information about a character's bodily condition, what limits their freedom to act, or a lasting change to their body.",
     },
     situational: {
+        scope: "scene",
         id: "situational",
-        label: "Situational",
+        label: "Scene",
         icon: "fa-location-dot",
         slots: SITUATIONAL_SLOTS,
         triggerMode: "always",
         seedField: "scenario",
-        diffIntroParagraph: `For each situational slot, determine whether the message below
-contains any information about it. Slots describe the physical scene
-the characters are currently in, not their actions or dialogue.`,
+        emptyValue: "",
+        diffIntroParagraph: `For each slot below, determine whether the message contains any
+information about it. Slots describe the scene the characters are
+currently in - where they are, who is with them, and when it is -
+not their actions or dialogue.`,
         diffTrueFalseLine: "If you find any information for a slot, mark it true. Otherwise mark it false.",
-        diffReasoningDescription: "One short clause per situational slot (location, features, timeOfDay, weather, privacyRisk, ambient, in that order), noting whether the message contains information about it and why.",
+        diffReasoningDescription: "One short clause per slot (location, presentPeople, timeOfDay, in that order), noting whether the message contains information about it and why.",
         slotDescriptions: {
-            location: "True if the message states or changes the current physical location.",
-            features: "True if the message mentions a notable object, piece of furniture, exit, or hazard in the environment.",
+            location: "True if the message states or changes where the characters are, or how private, exposed, or safe that place is.",
+            presentPeople: "True if the message states that someone is present in the scene, arrives, or leaves.",
             timeOfDay: "True if the message explicitly states or unambiguously implies the time of day.",
-            weather: "True if the message explicitly states weather that is relevant to the scene.",
-            privacyRisk: "True if the message establishes or changes whether the characters are alone, in public, or at risk of interruption.",
-            ambient: "True if the message mentions a notable sound, smell, lighting condition, or atmosphere.",
         },
-        slotLabel: (slot) => `Situational slot "${slot}" (the physical scene, not characters or events).`,
+        slotLabel: (slot) => `Scene slot "${slot}".`,
         updateRules: `- If the message establishes new information, incorporate it into the state.
 - If the message explicitly changes this aspect of the scene, replace the state with the new value.
 - If nothing actually changed despite the trigger, return the state unchanged.
 - Do not invent or infer details that were not explicitly stated.`,
+        slotOverrides: {
+            presentPeople: {
+                updateRules: `- Write out the full list of everyone present after applying the message.
+- Keep everyone who was already present unless the message says they left.
+- Add anyone the message says arrived or is present.
+- Separate names with ", ".
+- Do not invent people who were not named.`,
+            },
+        },
+        // A scene cut ("she drove home") changes the cast without naming anyone,
+        // so the location trigger has to pull presentPeople along or the old cast
+        // stays in the list forever.
+        slotTriggers: { location: ["presentPeople"] },
         slotUpdateStateDescription: "The new value of this slot after applying the update rules above.",
         slotDefaultSentinel: (slot) => {
-            if (slot === "timeOfDay" || slot === "weather") return "not established";
-            if (slot === "privacyRisk") return "unknown";
-            if (slot === "location") return "unknown";
-            return "none";
+            if (slot !== "presentPeople") return "none";
+            const context = getContext();
+            return [context.name1, context.name2].filter(Boolean).join(", ") || "none";
         },
-        gateDescription: "True if the message contains information about the physical scene or environment.",
-    },
-    expectations: {
-        id: "expectations",
-        label: "Expectations",
-        icon: "fa-list-check",
-        slots: EXPECTATIONS_SLOTS,
-        triggerMode: "target",
-        seedField: "target",
-        diffIntroParagraph: `For each expectations slot, determine whether the message below
-establishes any information about it. Slots track explicit rules or
-expectations placed on the tracked character, not descriptions of
-their actions.`,
-        diffTrueFalseLine: "If you find any information for a slot, mark it true. Otherwise mark it false.",
-        diffReasoningDescription: "One short clause noting whether the message establishes an explicit rule or expectation, and why.",
-        slotDescriptions: {
-            rules: "True if the message establishes an explicit rule or expectation placed on the tracked character, whether stated by themself or by someone else.",
-        },
-        slotLabel: (slot) => `Expectations slot "${slot}" (explicit rules established in the story).`,
-        updateRules: `- Keep every existing entry unchanged.
-- If the message establishes a new rule, append it to the existing entries, separated by "; ".
-- If nothing actually new was established, return the entries unchanged.
-- Do not invent or infer a rule that was not explicitly stated.
-- Use "none" only if there are no entries at all.`,
-        slotUpdateStateDescription: "The full new value of this slot after applying the update rules above.",
-        slotDefaultSentinel: () => "none",
-        gateDescription: "True if the message establishes an explicit rule or expectation placed on a character.",
+        gateDescription: "True if the message contains information about where the characters are, who is with them, or what time it is.",
     },
 };
+
+// bodyChanges stores a delta against the character profile, so the profile has
+// to be in the update call - the full card, deliberately, since a trimmed
+// summary would decide for the model what counts as a physical detail.
+function readTargetProfileText() {
+    const fields = getContext().getCharacterCardFields();
+    return (ensureChatState().target === "user" ? fields.persona : fields.description) || "";
+}
 
 function buildAreaDiffPrompt(config, message) {
     const exampleShape = JSON.stringify({
@@ -225,12 +208,16 @@ function buildAreaDiffSchema(config) {
 }
 
 function buildAreaSlotUpdatePrompt(config, slot, currentState, message) {
-    const blocks = [
-        config.slotLabel(slot),
+    const overrides = config.slotOverrides?.[slot] ?? {};
+    const blocks = [config.slotLabel(slot)];
+    if (overrides.context) {
+        blocks.push(overrides.context());
+    }
+    blocks.push(
         `Current state of ${slot}: "${currentState}"`,
         `Message: "${message}"`,
-        `Update the ${slot} state based on this message.\n${config.updateRules}`,
-    ];
+        `Update the ${slot} state based on this message.\n${overrides.updateRules ?? config.updateRules}`,
+    );
     if (config.updateHint) {
         blocks.push(config.updateHint(slot));
     }
@@ -319,13 +306,9 @@ const DEFAULT_TARGET = "char";
 // This mirrors how SillyTavern's own Author's Note feature splits its data:
 // global defaults in extension_settings, the actual per-conversation values
 // namespaced under chat_metadata[extensionName] (public/scripts/authors-note.js).
-const DEFAULT_AREA_SLOTS = {
-    clothes: Object.fromEntries(CLOTHING_SLOTS.map((slot) => [slot, ""])),
-    physicalState: Object.fromEntries(PHYSICAL_STATE_SLOTS.map((slot) => [slot, ""])),
-    stateOfMind: Object.fromEntries(STATE_OF_MIND_SLOTS.map((slot) => [slot, ""])),
-    situational: Object.fromEntries(SITUATIONAL_SLOTS.map((slot) => [slot, ""])),
-    expectations: Object.fromEntries(EXPECTATIONS_SLOTS.map((slot) => [slot, ""])),
-};
+const DEFAULT_AREA_SLOTS = Object.fromEntries(
+    STATE_AREAS.map(({ key }) => [key, Object.fromEntries(AREA_SLOT_CONFIGS[key].slots.map((slot) => [slot, ""]))]),
+);
 
 function ensureSettings() {
     if (!extension_settings[extensionName]) {
@@ -366,13 +349,57 @@ function ensureChatState() {
     const chatState = chatMetadata[extensionName];
     chatState.target = chatState.target || DEFAULT_TARGET;
     chatState.areas = chatState.areas || {};
+    migrateChatAreas(chatState);
     for (const { key } of STATE_AREAS) {
-        const area = chatState.areas[key] || {};
-        area.slots = Object.assign(structuredClone(DEFAULT_AREA_SLOTS[key]), area.slots);
-        chatState.areas[key] = area;
+        const stored = chatState.areas[key]?.slots ?? {};
+        chatState.areas[key] = {
+            slots: Object.fromEntries(
+                AREA_SLOT_CONFIGS[key].slots.map((slot) => [slot, stored[slot] ?? DEFAULT_AREA_SLOTS[key][slot]]),
+            ),
+        };
     }
 
     return chatState;
+}
+
+const LEGACY_AREAS_KEY = "legacyAreas";
+
+// The slot layout changed (26 slots across 5 areas -> 14 across 3). Old values
+// are parked instead of dropped: State of Mind and Expectations are append-only
+// records that belong in a later layer, not in an overwrite snapshot, and this
+// is the only copy of them.
+function migrateChatAreas(chatState) {
+    const areas = chatState.areas;
+    const oldBody = areas.physicalState?.slots;
+    const oldScene = areas.situational?.slots;
+    if (!(oldBody && "health" in oldBody) && !(oldScene && "privacyRisk" in oldScene)) {
+        return;
+    }
+
+    chatState[LEGACY_AREAS_KEY] = structuredClone(areas);
+
+    const carry = (...values) => values
+        .map((value) => String(value ?? "").trim())
+        .filter((value) => value && !EMPTY_SLOT_ANSWERS.has(value.toLowerCase()))
+        .join("; ");
+
+    areas.physicalState = {
+        slots: {
+            condition: carry(oldBody?.health, oldBody?.marks),
+            constraint: carry(oldBody?.restraints),
+            bodyChanges: "",
+        },
+    };
+    areas.situational = {
+        slots: {
+            location: carry(oldScene?.location, oldScene?.features, oldScene?.privacyRisk),
+            presentPeople: "",
+            timeOfDay: carry(oldScene?.timeOfDay),
+        },
+    };
+    delete areas.stateOfMind;
+    delete areas.expectations;
+    console.log("[Psychograph] Migrated chat state to the reduced slot layout; previous values kept under", LEGACY_AREAS_KEY);
 }
 
 function populateConnectionProfiles() {
@@ -561,9 +588,27 @@ async function runAreaGate(profileId, eligibleAreaKeys, message) {
         console.log("[Psychograph] Area gate reasoning:", gate.reasoning);
         return eligibleAreaKeys.filter((key) => gate[key] === true);
     } catch (error) {
-        console.error("[Psychograph] Area gate call failed, running all eligible areas instead:", error);
-        return eligibleAreaKeys;
+        // Extract nothing rather than everything: a failed gate is the one case
+        // where running all areas is both the most expensive outcome and the
+        // least informed one.
+        console.error("[Psychograph] Area gate call failed, extracting nothing this turn:", error);
+        return [];
     }
+}
+
+function normalizeSlotValue(config, value) {
+    const text = String(value ?? "").trim();
+    return EMPTY_SLOT_ANSWERS.has(text.toLowerCase()) ? config.emptyValue : text;
+}
+
+function expandTriggeredSlots(config, changedSlots) {
+    const expanded = new Set(changedSlots);
+    for (const slot of changedSlots) {
+        for (const dependent of config.slotTriggers?.[slot] ?? []) {
+            expanded.add(dependent);
+        }
+    }
+    return config.slots.filter((slot) => expanded.has(slot));
 }
 
 async function runAreaExtraction(areaKey, message) {
@@ -591,7 +636,7 @@ async function runAreaExtraction(areaKey, message) {
         return;
     }
 
-    const changedSlots = config.slots.filter((slot) => diff[slot] === true);
+    const changedSlots = expandTriggeredSlots(config, config.slots.filter((slot) => diff[slot] === true));
     if (changedSlots.length === 0) {
         return;
     }
@@ -610,14 +655,87 @@ async function runAreaExtraction(areaKey, message) {
                 AREA_SLOT_UPDATE_MAX_TOKENS,
             );
             console.log(`[Psychograph] ${config.label} update reasoning for "${slot}":`, update.reasoning);
-            area.slots[slot] = update.state;
-            $(`#psychograph_state_${config.id}_slot_${slot}`).val(update.state);
+            const value = normalizeSlotValue(config, update.state);
+            area.slots[slot] = value;
+            $(`#psychograph_state_${config.id}_slot_${slot}`).val(value);
         } catch (error) {
             console.error(`[Psychograph] ${config.label} update call failed for slot "${slot}":`, error);
         }
     }));
 
     getContext().saveMetadataDebounced();
+}
+
+const STATE_INJECT_ID = "psychograph_state";
+const STATE_INJECT_HEADING = "## Current state information";
+
+function readTargetName() {
+    const context = getContext();
+    return (ensureChatState().target === "user" ? context.name1 : context.name2) || "The character";
+}
+
+// "|" ends a slash command, so a slot value carrying one would truncate the
+// inject and run whatever followed as a command of its own.
+function sanitizeSlotValue(value) {
+    return String(value).replace(/[|\r\n]+/g, " ").trim();
+}
+
+function buildStateSnapshot() {
+    const settings = ensureSettings();
+    const chatState = ensureChatState();
+    const groups = [];
+
+    for (const { key } of STATE_AREAS) {
+        if (!settings.state.areas[key].enabled) {
+            continue;
+        }
+
+        const config = AREA_SLOT_CONFIGS[key];
+        const lines = config.slots
+            .map((slot) => [slot, sanitizeSlotValue(chatState.areas[key].slots[slot] ?? "")])
+            .filter(([, value]) => value)
+            .map(([slot, value]) => `- ${slot}: ${value}`);
+        if (lines.length === 0) {
+            continue;
+        }
+
+        const heading = config.scope === "character"
+            ? `${readTargetName()}'s ${config.label.toLowerCase()}`
+            : config.label;
+        groups.push(`${heading}\n${lines.join("\n")}`);
+    }
+
+    return groups.join("\n\n");
+}
+
+// Runs on GENERATION_AFTER_COMMANDS (covers swipe/continue/regenerate, where no
+// MESSAGE_SENT fires) and again after each message's extraction, so the snapshot
+// reflects the message that just triggered this turn rather than the one before.
+async function refreshStateInject() {
+    if (!ensureSettings().enabled) {
+        return;
+    }
+
+    const snapshot = buildStateSnapshot();
+    if (!snapshot) {
+        await flushStateInject();
+        return;
+    }
+
+    await getContext().executeSlashCommandsWithOptions(
+        `/inject id=${STATE_INJECT_ID} position=after ephemeral=true scan=true ${STATE_INJECT_HEADING}\n${snapshot} |`,
+    );
+}
+
+async function handleStateInjectForGeneration(type, _options, dryRun) {
+    if (dryRun || type === "quiet") {
+        return;
+    }
+    await refreshStateInject();
+}
+
+async function flushStateInject() {
+    await getContext().executeSlashCommandsWithOptions(`/flushinject ${STATE_INJECT_ID} |`);
 }
 
 const COGNEE_METADATA_KEY = "stPsychograph";
@@ -883,6 +1001,7 @@ function handleChatMessageEvent(eventType) {
 
         const gatedAreaKeys = await runAreaGate(profileId, eligibleAreaKeys, lastMessage.mes);
         await Promise.all(gatedAreaKeys.map((areaKey) => runAreaExtraction(areaKey, lastMessage.mes)));
+        await refreshStateInject();
     };
 }
 
@@ -900,6 +1019,9 @@ function bindChatEvents() {
 
     eventSource.on(event_types.GENERATION_AFTER_COMMANDS, handleCogneeRecall);
     eventSource.on(event_types.GENERATION_ENDED, flushCogneeRecallInject);
+
+    eventSource.on(event_types.GENERATION_AFTER_COMMANDS, handleStateInjectForGeneration);
+    eventSource.on(event_types.GENERATION_ENDED, flushStateInject);
 
     // Slot inputs show the current chat's state — without this they'd keep
     // displaying whatever chat was open when the panel was last rendered.
