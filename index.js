@@ -383,9 +383,7 @@ const defaultSettings = {
         recallEnabled: false,
     },
     state: {
-        areas: Object.fromEntries(
-            STATE_AREAS.map(({ key }) => [key, { useDefaultPrompt: true, customPrompt: "", enabled: true }]),
-        ),
+        areas: Object.fromEntries(STATE_AREAS.map(({ key }) => [key, { enabled: true }])),
     },
 };
 
@@ -452,6 +450,7 @@ function ensureChatState() {
     chatState.target = chatState.target || DEFAULT_TARGET;
     chatState.areas = chatState.areas || {};
     migrateChatAreas(chatState);
+    migrateCogneeChatId(chatState);
     for (const { key } of STATE_AREAS) {
         const stored = chatState.areas[key]?.slots ?? {};
         chatState.areas[key] = {
@@ -469,6 +468,24 @@ function ensureChatState() {
 // started on is gone and its result must be dropped.
 function isCurrentChatState(chatState) {
     return ensureChatState() === chatState;
+}
+
+const LEGACY_COGNEE_METADATA_KEY = "stPsychograph";
+
+// The Cognee chat id used to live in its own chat_metadata namespace next to
+// the one holding the slot state. Chats written before the merge still carry
+// it there, and losing it would orphan that chat's Cognee dataset.
+function migrateCogneeChatId(chatState) {
+    const chatMetadata = getContext().chatMetadata;
+    const legacy = chatMetadata[LEGACY_COGNEE_METADATA_KEY];
+    if (!legacy) {
+        return;
+    }
+
+    if (chatState.cogneeChatId === undefined && legacy.cogneeChatId) {
+        chatState.cogneeChatId = legacy.cogneeChatId;
+    }
+    delete chatMetadata[LEGACY_COGNEE_METADATA_KEY];
 }
 
 const LEGACY_AREAS_KEY = "legacyAreas";
@@ -536,10 +553,7 @@ function renderSettings() {
     renderCogneeChatSection();
 
     for (const { key, id } of STATE_AREAS) {
-        const area = settings.state.areas[key];
-        $(`#psychograph_state_${id}_enabled`).prop("checked", area.enabled);
-        $(`#psychograph_state_${id}_default_prompt`).prop("checked", area.useDefaultPrompt);
-        $(`#psychograph_state_${id}_custom_prompt`).val(area.customPrompt).prop("hidden", area.useDefaultPrompt);
+        $(`#psychograph_state_${id}_enabled`).prop("checked", settings.state.areas[key].enabled);
     }
 
     renderChatState();
@@ -626,18 +640,6 @@ function bindSettingsEvents() {
     for (const { key, id } of STATE_AREAS) {
         $(`#psychograph_state_${id}_enabled`).on("change", function () {
             ensureSettings().state.areas[key].enabled = $(this).prop("checked");
-            saveSettingsDebounced();
-        });
-
-        $(`#psychograph_state_${id}_default_prompt`).on("change", function () {
-            const useDefaultPrompt = $(this).prop("checked");
-            ensureSettings().state.areas[key].useDefaultPrompt = useDefaultPrompt;
-            $(`#psychograph_state_${id}_custom_prompt`).prop("hidden", useDefaultPrompt);
-            saveSettingsDebounced();
-        });
-
-        $(`#psychograph_state_${id}_custom_prompt`).on("input", function () {
-            ensureSettings().state.areas[key].customPrompt = String($(this).val());
             saveSettingsDebounced();
         });
 
@@ -804,14 +806,8 @@ async function runAreaExtraction(areaKey, message, speaker) {
     }
 
     const config = AREA_SLOT_CONFIGS[areaKey];
-    const areaSettings = settings.state.areas[areaKey];
     const chatState = ensureChatState();
-    const diffPrompt = areaSettings.useDefaultPrompt
-        ? buildAreaDiffPrompt(config, message, speaker)
-        : areaSettings.customPrompt
-            .replaceAll("{{message}}", message)
-            .replaceAll("{{target}}", readTargetName())
-            .replaceAll("{{speaker}}", speaker || "");
+    const diffPrompt = buildAreaDiffPrompt(config, message, speaker);
     const diffSchema = buildAreaDiffSchema(config);
 
     let diff;
@@ -945,20 +941,17 @@ async function flushStateInject() {
     await getContext().executeSlashCommandsWithOptions(`/flushinject ${STATE_INJECT_ID} |`);
 }
 
-const COGNEE_METADATA_KEY = "stPsychograph";
-
 // Stored in chat_metadata (saved inside the chat file itself) rather than
 // derived from the chat's filename/chatId, so it survives a chat rename —
 // this is the id that scopes a Cognee dataset/session to one specific
 // roleplay instance, since the same character can have many separate chats.
 function readCogneeChatId() {
-    return getContext().chatMetadata[COGNEE_METADATA_KEY]?.cogneeChatId;
+    return ensureChatState().cogneeChatId;
 }
 
 function writeCogneeChatId(id) {
-    const context = getContext();
-    context.chatMetadata[COGNEE_METADATA_KEY] = { ...context.chatMetadata[COGNEE_METADATA_KEY], cogneeChatId: id };
-    context.saveMetadataDebounced();
+    ensureChatState().cogneeChatId = id;
+    getContext().saveMetadataDebounced();
 }
 
 function getCogneeChatId() {
