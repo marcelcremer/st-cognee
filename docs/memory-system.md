@@ -72,6 +72,27 @@ previous state, which is why it needed sentinels for "no info" and an explicit
 here: the model has both sides in front of it and writes the resulting list,
 removals included.
 
+**Seeding.** The sheet starts from the character card, not from zero. On the
+first extraction run of a chat, every active area is seeded from the card —
+description or persona for the character areas, scenario for Scene — before the
+message itself is processed, and a `seeded` flag on the chat records that it
+happened. The flag rather than a message id, so switching the extension on
+mid-chat still seeds; a chat that already carries extracted state counts as
+seeded, so introducing the flag does not overwrite what such a chat established
+on its own. The toolbar's *Init* entries stay, as a manual re-seed.
+
+`bodyChanges` is the one slot excluded from seeding: it stores a delta against
+the card, so seeding it from the card would fill it with exactly what it is
+meant to be different from.
+
+**Seed prompts.** Reading a static profile is a different job from finding a
+delta in a story beat, so a seed run renders its own variant of the same
+document. It says the text below is a profile (or a scenario) rather than a
+message, its rules ask what the profile *describes* instead of what the message
+*changes*, and it drops the current-value section — establishing the starting
+value is the whole point, so the value it replaces has no business being in the
+prompt.
+
 **Empty values.** `""` everywhere, for every reason — never established, user
 cleared it, nothing there. Empty slots are not injected at all. The single
 exception is Clothes, where `"none"` is a stored, injected value: an empty
