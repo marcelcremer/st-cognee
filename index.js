@@ -16,6 +16,11 @@ const CLOTHING_SLOTS = ["top", "bottom", "underwear", "legwear", "footwear", "ac
 const PHYSICAL_STATE_SLOTS = ["condition", "constraint", "bodyChanges"];
 const SITUATIONAL_SLOTS = ["location", "presentPeople", "timeOfDay"];
 
+// Reading a static profile is a different job from finding a delta in a story
+// beat, so every prompt builder takes the mode and picks its own wording.
+const MESSAGE_MODE = "message";
+const SEED_MODE = "seed";
+
 const AREA_DIFF_MAX_TOKENS = 250;
 const AREA_SLOT_UPDATE_MAX_TOKENS = 200;
 const AREA_GATE_MAX_TOKENS = 200;
@@ -46,6 +51,11 @@ const AREA_SLOT_CONFIGS = {
             "For each slot, determine whether the message contains any information about it.",
             "If you find any change for a slot, mark it true. When there is no change about the slot, mark it false.",
         ],
+        seedDiffRules: [
+            "Analyze ONLY the profile below.",
+            "For each slot, determine whether the profile describes what the character wears there.",
+            "If the profile describes a slot, mark it true. If it says nothing about the slot, mark it false.",
+        ],
         updateRules: [
             "If a new item is added as a layer (e.g. a coat over a blouse), keep the existing item(s) and add the new one.",
             `If a new item explicitly replaces the existing one (e.g. "changes into a dress"), output only the new item(s).`,
@@ -54,6 +64,11 @@ const AREA_SLOT_CONFIGS = {
             "If nothing actually changed despite the trigger, return the state unchanged.",
             "Do not invent details that were not stated in the message.",
             "If an item from the current state is not mentioned in the message at all, keep it unchanged in the output — do not drop it just because it wasn't referenced again.",
+        ],
+        seedUpdateRules: [
+            "Output what the profile describes the character as wearing in this slot.",
+            `Use "none" if the profile says nothing about this slot.`,
+            "Do not invent details that were not stated in the profile.",
         ],
         hints: [
             "Legwear covers the leg above the ankle, Footwear the foot.",
@@ -70,7 +85,19 @@ const AREA_SLOT_CONFIGS = {
             hair: "True if hairstyle is described, mentioned, or changed (not just touched/moved).",
             makeup: "True if makeup is applied, described, smeared, or removed.",
         },
+        seedDiffReasoningDescription: "One short clause per clothing category (top, bottom, underwear, legwear, footwear, accessories, hair, makeup, in that order), noting whether the profile describes it and why.",
+        seedSlotDescriptions: {
+            top: "True if the profile describes what the character wears on the upper body (shirts, jackets, coats, etc.).",
+            bottom: "True if the profile describes pants, skirts, shorts, or a dress's lower half.",
+            underwear: "True if the profile describes underwear.",
+            legwear: "True if the profile describes stockings, tights, socks, or garters.",
+            footwear: "True if the profile describes shoes, boots, or heels.",
+            accessories: "True if the profile describes jewelry, glasses, hats, belts, or similar.",
+            hair: "True if the profile describes the character's hairstyle.",
+            makeup: "True if the profile describes the character's makeup.",
+        },
         slotUpdateStateDescription: "The full new state of this slot after applying the message. Comma-separated list of items if multiple. Use \"none\" if nothing is worn in this slot.",
+        seedSlotUpdateStateDescription: "What the profile describes the character as wearing in this slot. Comma-separated list of items if multiple. Use \"none\" if the profile says nothing about this slot.",
         slotDefaultSentinel: () => "none",
         gateDescription: "True if the message contains information about what a character is wearing, or a change to it.",
         gateSummary: "what a character is wearing, or a change to it.",
@@ -91,12 +118,26 @@ const AREA_SLOT_CONFIGS = {
             "For each slot, determine whether the message contains any information about it.",
             "If you find any information for a slot, mark it true. Otherwise mark it false.",
         ],
+        seedDiffRules: [
+            "For each slot, determine whether the profile describes it.",
+            "If the profile describes a slot, mark it true. Otherwise mark it false.",
+        ],
         updateRules: [
             "If the message adds new information, incorporate it into the existing state.",
             `If the message explicitly resolves or ends what the slot describes, output "none".`,
             "If nothing actually changed despite the trigger, return the state unchanged.",
             "Do not invent details that were not stated in the message.",
         ],
+        seedUpdateRules: [
+            "Output what the profile states for this slot.",
+            `Output "none" if the profile says nothing about this slot.`,
+            "Do not invent details that were not stated in the profile.",
+        ],
+        seedDiffReasoningDescription: "One short clause per slot (condition, constraint, in that order), noting whether the profile describes it and why.",
+        seedSlotDescriptions: {
+            condition: "True if the profile describes a bodily state the character is in — injury, illness, exhaustion, hunger, or intoxication.",
+            constraint: "True if the profile describes what limits the character's freedom to act — being restrained, confined, guarded, or under an obligation they cannot simply walk away from.",
+        },
         diffReasoningDescription: "One short clause per slot (condition, constraint, bodyChanges, in that order), noting whether the message contains information about it and why.",
         slotDescriptions: {
             condition: "True if the message contains information about the character's temporary bodily state — injury, illness, exhaustion, hunger, or intoxication.",
@@ -107,6 +148,9 @@ const AREA_SLOT_CONFIGS = {
             // Only slot that stores a delta rather than a value, so it is the
             // only one whose update call needs the profile it is a delta against.
             bodyChanges: {
+                // Seeding it from the card would fill the slot with the very
+                // profile it stores a delta against.
+                skipOnSeed: true,
                 profileContext: () => readTargetProfileText(),
                 updateRules: [
                     "Output ONLY how the body now differs from the profile above. Never repeat anything the profile already says.",
@@ -118,6 +162,7 @@ const AREA_SLOT_CONFIGS = {
             },
         },
         slotUpdateStateDescription: "The new value of this slot after applying the update rules above.",
+        seedSlotUpdateStateDescription: "The starting value of this slot as stated in the profile.",
         slotDefaultSentinel: () => "none",
         gateDescription: "True if the message contains information about a character's bodily condition, what limits their freedom to act, or a lasting change to their body.",
         gateSummary: "a character's bodily condition, what limits their freedom to act, or a lasting change to their body.",
@@ -135,12 +180,27 @@ const AREA_SLOT_CONFIGS = {
             "For each slot, determine whether the message contains any information about it.",
             "If you find any information for a slot, mark it true. Otherwise mark it false.",
         ],
+        seedDiffRules: [
+            "For each slot, determine whether the scenario describes it.",
+            "If the scenario describes a slot, mark it true. Otherwise mark it false.",
+        ],
         updateRules: [
             "If the message establishes new information, incorporate it into the state.",
             "If the message explicitly changes this aspect of the scene, replace the state with the new value.",
             "If nothing actually changed despite the trigger, return the state unchanged.",
             "Do not invent or infer details that were not explicitly stated.",
         ],
+        seedUpdateRules: [
+            "Output what the scenario establishes for this slot.",
+            `Output "none" if the scenario says nothing about this slot.`,
+            "Do not invent or infer details that were not explicitly stated.",
+        ],
+        seedDiffReasoningDescription: "One short clause per slot (location, presentPeople, timeOfDay, in that order), noting whether the scenario describes it and why.",
+        seedSlotDescriptions: {
+            location: "True if the scenario states where the characters are.",
+            presentPeople: "True if the scenario names who is present.",
+            timeOfDay: "True if the scenario states or unambiguously implies the time of day.",
+        },
         diffReasoningDescription: "One short clause per slot (location, presentPeople, timeOfDay, in that order), noting whether the message contains information about it and why.",
         slotDescriptions: {
             location: "True if the message states or changes where the characters are, or how private, exposed, or safe that place is.",
@@ -156,6 +216,11 @@ const AREA_SLOT_CONFIGS = {
                     `Separate names with ", ".`,
                     "Do not invent people who were not named.",
                 ],
+                seedUpdateRules: [
+                    "List everyone the scenario says is present.",
+                    `Separate names with ", ".`,
+                    "Do not invent people who were not named.",
+                ],
             },
         },
         // A scene cut ("she drove home") changes the cast without naming anyone,
@@ -163,6 +228,7 @@ const AREA_SLOT_CONFIGS = {
         // stays in the list forever.
         slotTriggers: { location: ["presentPeople"] },
         slotUpdateStateDescription: "The new value of this slot after applying the update rules above.",
+        seedSlotUpdateStateDescription: "The starting value of this slot as established by the scenario.",
         slotDefaultSentinel: (slot) => {
             if (slot !== "presentPeople") return "none";
             const context = getContext();
@@ -203,7 +269,13 @@ function qualifiedSlotName(config, slot) {
 // Naming the sheet's owner is what tells the model whose state it is filling
 // in: with two people in a scene "she" is otherwise a guess, and extraction
 // runs on every message regardless of who wrote it.
-function buildSheetIntro(config, focusPhrase) {
+function buildSheetIntro(config, focusPhrase, mode) {
+    if (mode === SEED_MODE) {
+        if (config.scope !== "character") {
+            return `Your Job is to fill in the starting values of the scene sheet of a roleplay from its scenario. The scene sheet is slot-based and you only have to focus on ${focusPhrase}. The text below is the scenario the roleplay starts from, not a message from it.`;
+        }
+        return `Your Job is to fill in the starting values of the character sheet for ${readTargetName()} from their profile. The character sheet is slot-based and you only have to focus on ${focusPhrase}. The text below is a static profile, not a scene from the roleplay.`;
+    }
     if (config.scope !== "character") {
         return `Your Job is to extract information for the scene sheet of an ongoing roleplay. The scene sheet is slot-based and you only have to focus on ${focusPhrase}.`;
     }
@@ -228,24 +300,24 @@ function buildHintSection(config) {
     };
 }
 
-function buildAreaDiffPrompt(config, message, speaker) {
+function buildAreaDiffPrompt(config, slots, message, speaker, mode) {
     const exampleShape = JSON.stringify({
         reasoning: "...",
-        ...Object.fromEntries(config.slots.map((slot) => [slot, false])),
+        ...Object.fromEntries(slots.map((slot) => [slot, false])),
     });
-    const countPhrase = config.slots.length === 1 ? "the boolean" : `the ${config.slots.length} booleans`;
+    const countPhrase = slots.length === 1 ? "the boolean" : `the ${slots.length} booleans`;
 
     return buildPromptDocument([
-        { heading: "# Task Description", content: buildSheetIntro(config, "one specific group of slots") },
+        { heading: "# Task Description", content: buildSheetIntro(config, "one specific group of slots", mode) },
         {
             heading: "## Slots",
-            content: `Your current task is to work on the following slots: ${config.slots.map((slot) => qualifiedSlotName(config, slot)).join(", ")}.`,
+            content: `Your current task is to work on the following slots: ${slots.map((slot) => qualifiedSlotName(config, slot)).join(", ")}.`,
         },
         { heading: "## Slot description", content: config.groupDescription },
         {
             heading: "## Rules",
             content: bulletList([
-                ...config.diffRules,
+                ...(mode === SEED_MODE ? config.seedDiffRules : config.diffRules),
                 buildAttributionRule(config),
                 "There are multiple groups of slots on the sheet. You MUST only concentrate only on your assigned group.",
             ]),
@@ -258,39 +330,49 @@ function buildAreaDiffPrompt(config, message, speaker) {
     ], speaker, message);
 }
 
-function buildAreaDiffSchema(config) {
+function buildAreaDiffSchema(config, slots, mode) {
+    const seeding = mode === SEED_MODE;
+    const slotDescriptions = seeding ? config.seedSlotDescriptions : config.slotDescriptions;
     const properties = {
-        reasoning: { type: "string", description: config.diffReasoningDescription },
+        reasoning: {
+            type: "string",
+            description: seeding ? config.seedDiffReasoningDescription : config.diffReasoningDescription,
+        },
     };
-    for (const slot of config.slots) {
-        properties[slot] = { type: "boolean", description: config.slotDescriptions[slot] };
+    for (const slot of slots) {
+        properties[slot] = { type: "boolean", description: slotDescriptions[slot] };
     }
     return {
         type: "object",
         properties,
-        required: ["reasoning", ...config.slots],
+        required: ["reasoning", ...slots],
         additionalProperties: false,
     };
 }
 
-function buildAreaSlotUpdatePrompt(config, slot, currentState, message, speaker) {
+function buildAreaSlotUpdatePrompt(config, slot, currentState, message, speaker, mode) {
     const overrides = config.slotOverrides?.[slot] ?? {};
+    const seeding = mode === SEED_MODE;
 
     return buildPromptDocument([
-        { heading: "# Task Description", content: buildSheetIntro(config, "one specific slot") },
+        { heading: "# Task Description", content: buildSheetIntro(config, "one specific slot", mode) },
         { heading: "## Slot", content: `Your current task is to work on the following slot: ${qualifiedSlotName(config, slot)}.` },
         { heading: "## Slot description", content: config.groupDescription },
         overrides.profileContext
             ? { heading: "## Character profile", content: `"""\n${overrides.profileContext()}\n"""` }
             : null,
-        {
+        // A seed run establishes the starting value, so whatever is in the slot
+        // is what it replaces - showing it would only invite the model to keep it.
+        seeding ? null : {
             heading: "## Current state",
             content: `The Current state of the slot ${qualifiedSlotName(config, slot)} is: "${currentState}"`,
         },
         {
             heading: "## Rules",
             content: bulletList([
-                ...(overrides.updateRules ?? config.updateRules),
+                ...(seeding
+                    ? (overrides.seedUpdateRules ?? config.seedUpdateRules)
+                    : (overrides.updateRules ?? config.updateRules)),
                 buildAttributionRule(config),
                 "There are multiple slots on the sheet. You MUST only concentrate only on your assigned slot.",
             ]),
@@ -303,7 +385,7 @@ function buildAreaSlotUpdatePrompt(config, slot, currentState, message, speaker)
     ], speaker, message);
 }
 
-function buildAreaSlotUpdateSchema(config) {
+function buildAreaSlotUpdateSchema(config, mode) {
     return {
         type: "object",
         properties: {
@@ -311,7 +393,10 @@ function buildAreaSlotUpdateSchema(config) {
                 type: "string",
                 description: "One short sentence working through which of the update rules below applies, before answering.",
             },
-            state: { type: "string", description: config.slotUpdateStateDescription },
+            state: {
+                type: "string",
+                description: mode === SEED_MODE ? config.seedSlotUpdateStateDescription : config.slotUpdateStateDescription,
+            },
         },
         required: ["reasoning", "state"],
         additionalProperties: false,
@@ -453,6 +538,9 @@ function ensureChatState() {
             ),
         };
     }
+    if (chatState.seeded === undefined) {
+        chatState.seeded = hasExtractedState(chatState);
+    }
 
     return chatState;
 }
@@ -473,6 +561,14 @@ function migrateCogneeChatId(chatState) {
         chatState.cogneeChatId = legacy.cogneeChatId;
     }
     delete chatMetadata[LEGACY_COGNEE_METADATA_KEY];
+}
+
+// A chat that already carries extracted state predates the seeded flag, and
+// seeding it now would overwrite what the chat itself established.
+function hasExtractedState(chatState) {
+    return STATE_AREAS.some(({ key }) => AREA_SLOT_CONFIGS[key].slots.some(
+        (slot) => chatState.areas[key].slots[slot] !== DEFAULT_AREA_SLOTS[key][slot],
+    ));
 }
 
 const LEGACY_AREAS_KEY = "legacyAreas";
@@ -709,7 +805,7 @@ function expandTriggeredSlots(config, changedSlots) {
     return config.slots.filter((slot) => expanded.has(slot));
 }
 
-async function runAreaExtraction(areaKey, message, speaker) {
+async function runAreaExtraction(areaKey, message, speaker, mode = MESSAGE_MODE) {
     const settings = ensureSettings();
     const profileId = settings.connectionProfile;
     if (!profileId) {
@@ -719,8 +815,11 @@ async function runAreaExtraction(areaKey, message, speaker) {
 
     const config = AREA_SLOT_CONFIGS[areaKey];
     const area = ensureChatState().areas[areaKey];
-    const diffPrompt = buildAreaDiffPrompt(config, message, speaker);
-    const diffSchema = buildAreaDiffSchema(config);
+    const slots = mode === SEED_MODE
+        ? config.slots.filter((slot) => !config.slotOverrides?.[slot]?.skipOnSeed)
+        : config.slots;
+    const diffPrompt = buildAreaDiffPrompt(config, slots, message, speaker, mode);
+    const diffSchema = buildAreaDiffSchema(config, slots, mode);
 
     let diff;
     try {
@@ -731,15 +830,16 @@ async function runAreaExtraction(areaKey, message, speaker) {
         return;
     }
 
-    const changedSlots = expandTriggeredSlots(config, config.slots.filter((slot) => diff[slot] === true));
+    const changedSlots = expandTriggeredSlots(config, slots.filter((slot) => diff[slot] === true))
+        .filter((slot) => slots.includes(slot));
     if (changedSlots.length === 0) {
         return;
     }
 
-    const slotUpdateSchema = buildAreaSlotUpdateSchema(config);
+    const slotUpdateSchema = buildAreaSlotUpdateSchema(config, mode);
     await Promise.all(changedSlots.map(async (slot) => {
         const currentState = area.slots[slot] || config.slotDefaultSentinel(slot);
-        const updatePrompt = buildAreaSlotUpdatePrompt(config, slot, currentState, message, speaker);
+        const updatePrompt = buildAreaSlotUpdatePrompt(config, slot, currentState, message, speaker, mode);
 
         try {
             const update = await sendJsonSchemaRequest(
@@ -1078,6 +1178,10 @@ function handleChatMessageEvent() {
             return;
         }
 
+        if (!ensureChatState().seeded) {
+            await seedChatStateFromCard(eligibleAreaKeys);
+        }
+
         const chat = getContext().chat;
         const lastMessage = chat[chat.length - 1];
         if (!lastMessage) {
@@ -1204,29 +1308,49 @@ async function rerunAreaExtractionNow(areaKey) {
     await runAreaExtraction(areaKey, lastMessage.mes, readMessageSpeaker(lastMessage));
 }
 
+function readAreaSeedText(config) {
+    const fields = getContext().getCharacterCardFields();
+
+    if (config.seedField === "scenario") {
+        return { text: fields.scenario, missingLabel: "No scenario found." };
+    }
+    if (ensureChatState().target === "user") {
+        return { text: fields.persona, missingLabel: "No persona description found." };
+    }
+    return { text: fields.description, missingLabel: "No character description found." };
+}
+
+// Seeding runs before the first message is processed rather than off a message
+// id, so it also works when the extension is switched on mid-chat.
+async function seedChatStateFromCard(eligibleAreaKeys) {
+    const chatState = ensureChatState();
+    chatState.seeded = true;
+    getContext().saveMetadataDebounced();
+
+    await Promise.all(eligibleAreaKeys.map(async (areaKey) => {
+        const config = AREA_SLOT_CONFIGS[areaKey];
+        const { text } = readAreaSeedText(config);
+        if (!text || !text.trim()) {
+            console.log(`[Psychograph] ${config.label} seeding: nothing on the card to seed from, skipping.`);
+            return;
+        }
+        await runAreaExtraction(areaKey, text, "", SEED_MODE);
+    }));
+}
+
 async function initAreaFromDescription(areaKey) {
     const config = AREA_SLOT_CONFIGS[areaKey];
-    const context = getContext();
-    const fields = context.getCharacterCardFields();
+    const { text, missingLabel } = readAreaSeedText(config);
 
-    let seedText;
-    let missingLabel;
-    if (config.seedField === "scenario") {
-        seedText = fields.scenario;
-        missingLabel = "No scenario found.";
-    } else {
-        const target = ensureChatState().target;
-        seedText = target === "user" ? fields.persona : fields.description;
-        missingLabel = target === "user" ? "No persona description found." : "No character description found.";
-    }
-
-    if (!seedText || !seedText.trim()) {
+    if (!text || !text.trim()) {
         toastr.warning(missingLabel, "Psychograph");
         return;
     }
 
     toastr.info(`Initializing ${config.label.toLowerCase()} from description…`, "Psychograph");
-    await runAreaExtraction(areaKey, seedText);
+    ensureChatState().seeded = true;
+    await runAreaExtraction(areaKey, text, "", SEED_MODE);
+    getContext().saveMetadataDebounced();
 }
 
 function togglePsychographSubmenu(anchorElement) {
