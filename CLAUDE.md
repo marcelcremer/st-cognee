@@ -126,9 +126,13 @@ the agent.
 
 ## Language
 
-All repo content (code, comments, README, this file, GitHub issues/PRs) is
-written in English, regardless of the language used in source material or
-conversations that produced it.
+Talk to the repo owner in **German**. Everything that lands in the repo or on
+GitHub is written in **English** — code, comments, README, this file, commit
+messages, branch names, issues, PRs and issue/PR comments — regardless of the
+language used in source material or in the conversation that produced it.
+
+So a German conversation still produces English commits and English issue
+comments; only the chat itself switches language.
 
 ## SillyTavern extension conventions
 
