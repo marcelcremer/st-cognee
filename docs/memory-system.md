@@ -113,12 +113,25 @@ since information about Jacob is information about Jacob no matter who typed it.
 The gate is the exception and names no owner — it decides only whether a turn
 touches an area at all, never what the value would be.
 
+**Which message, and how often.** Extraction runs on the *predecessor* of the
+newest message, exactly once. Only the newest message can be swiped, so the
+predecessor is settled: a swipe re-fires the message event, the predecessor is
+already marked as extracted, and nothing runs a second time on top of state the
+first run already moved. The marker is a flag in `message.extra` rather than an
+in-memory set, so it survives a reload. Deleting or editing the newest message
+needs no handling for the same reason — it was never extracted.
+
+The cost is that the sheet lags one message behind: while message N is being
+generated, the snapshot covers through N-2. N-1 is verbatim in the context
+window right above the inject, though, so the model reads it there — the same
+reasoning that kept `mood` out of this layer.
+
 **Open issues:**
-- Extraction runs on the newest message, which a swipe can still change, so a
-  re-generated message is extracted twice on top of already-updated state.
-  Extracting the *predecessor* instead — always settled — plus a once-only
-  marker per message would close this, and with it deletion and editing of the
-  last message.
+- Deleting or editing a message from the *middle* of a chat leaves what it
+  contributed in the sheet. That needs a rollback stack, but it is the rare
+  case; the common ones above are covered without one.
+- The toolbar's manual re-run still targets the newest message and does not mark
+  it, so a re-run followed by the automatic pass applies that message twice.
 - One global slot set, so group chats cannot be represented.
 
 ## 2. Core Memories

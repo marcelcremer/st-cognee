@@ -495,6 +495,21 @@ function isStoryMessage(message) {
     return Boolean(message) && !message.is_system && Boolean(String(message.mes ?? "").trim());
 }
 
+const STATE_EXTRACTED_KEY = "psychographStateExtracted";
+
+// The marker lives in message.extra, not in an in-memory set, so it survives a
+// reload. saveMetadataDebounced() is what persists it: chat metadata is stored
+// inside the chat file, so writing it writes the messages along with it.
+function isStateExtracted(message) {
+    return Boolean(message?.extra?.[STATE_EXTRACTED_KEY]);
+}
+
+function markStateExtracted(message) {
+    message.extra = message.extra || {};
+    message.extra[STATE_EXTRACTED_KEY] = true;
+    getContext().saveMetadataDebounced();
+}
+
 function ensureSettings() {
     if (!extension_settings[extensionName]) {
         extension_settings[extensionName] = structuredClone(defaultSettings);
@@ -1286,14 +1301,19 @@ function handleChatMessageEvent() {
             }
 
             const chat = getContext().chat;
-            const lastMessage = chat[chat.length - 1];
-            if (!isStoryMessage(lastMessage)) {
+            // The newest message is still swipeable, and a swipe re-fires this
+            // event with new text — extracting it would apply a second diff on
+            // top of state the first run already moved. The predecessor is
+            // settled, so it can only ever be extracted once.
+            const message = chat[chat.length - 2];
+            if (!isStoryMessage(message) || isStateExtracted(message)) {
                 return;
             }
+            markStateExtracted(message);
 
-            const speaker = readMessageSpeaker(lastMessage);
-            const gatedAreaKeys = await runAreaGate(profileId, eligibleAreaKeys, lastMessage.mes, speaker);
-            await Promise.all(gatedAreaKeys.map((areaKey) => runAreaExtraction(areaKey, lastMessage.mes, speaker)));
+            const speaker = readMessageSpeaker(message);
+            const gatedAreaKeys = await runAreaGate(profileId, eligibleAreaKeys, message.mes, speaker);
+            await Promise.all(gatedAreaKeys.map((areaKey) => runAreaExtraction(areaKey, message.mes, speaker)));
             await refreshStateInject();
         });
     };
