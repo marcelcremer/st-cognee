@@ -489,6 +489,12 @@ const DEFAULT_AREA_SLOTS = Object.fromEntries(
     STATE_AREAS.map(({ key }) => [key, Object.fromEntries(AREA_SLOT_CONFIGS[key].slots.map((slot) => [slot, ""]))]),
 );
 
+// A /sys note or a hidden message is not story text: it must neither move
+// slot state nor reach the graph.
+function isStoryMessage(message) {
+    return Boolean(message) && !message.is_system && Boolean(String(message.mes ?? "").trim());
+}
+
 function ensureSettings() {
     if (!extension_settings[extensionName]) {
         extension_settings[extensionName] = structuredClone(defaultSettings);
@@ -543,6 +549,13 @@ function ensureChatState() {
     }
 
     return chatState;
+}
+
+// A chat switch reassigns chat_metadata wholesale, so the identity of the
+// per-chat state object is what tells an in-flight extraction that the chat it
+// started on is gone and its result must be dropped.
+function isCurrentChatState(chatState) {
+    return ensureChatState() === chatState;
 }
 
 const LEGACY_COGNEE_METADATA_KEY = "stPsychograph";
@@ -666,6 +679,7 @@ function bindSettingsEvents() {
 
     $("#psychograph_connection_profile").on("change", function () {
         ensureSettings().connectionProfile = String($(this).val());
+        shownConfigWarnings.clear();
         saveSettingsDebounced();
     });
 
@@ -752,8 +766,61 @@ function parseJsonResponse(content) {
     }
 }
 
+// Extraction runs on every turn, so a misconfiguration would stack one toast
+// per message without this.
+const shownConfigWarnings = new Set();
+
+function warnOnce(key, message) {
+    if (shownConfigWarnings.has(key)) {
+        return;
+    }
+    shownConfigWarnings.add(key);
+    toastr.warning(message, "Psychograph");
+}
+
+const NO_PROFILE_WARNING = "No connection profile selected for Psychograph — state extraction stays off until you pick one.";
+
+// The only backends SillyTavern forwards json_schema to; everywhere else
+// enforcement silently no-ops, see docs/sillytavern-ui-notes.md.
+const SCHEMA_ENFORCING_APIS = new Set(["tabby", "llamacpp"]);
+
+function warnIfSchemaEnforcementUnsupported(profile) {
+    const suffix = "Extraction falls back to the prompt alone, which small models follow less reliably.";
+
+    if (profile.mode !== "tc") {
+        warnOnce(`schema:${profile.id}`, `"${profile.name}" is a chat-completion profile and SillyTavern doesn't send a JSON schema for those. ${suffix}`);
+        return;
+    }
+
+    const api = String(profile.api ?? "").toLowerCase();
+    if (api && !SCHEMA_ENFORCING_APIS.has(api)) {
+        warnOnce(`schema:${profile.id}`, `SillyTavern doesn't forward the JSON schema to ${api}, only to TabbyAPI and llama.cpp. ${suffix}`);
+    }
+}
+
+function resolveProfile(profileId) {
+    let profile = null;
+    try {
+        profile = ConnectionManagerRequestService.getProfile(profileId);
+    } catch (error) {
+        console.error("[Psychograph] Connection profile lookup failed:", error);
+    }
+
+    if (!profile) {
+        warnOnce(`profile:${profileId}`, "The connection profile Psychograph is configured to use no longer exists. Pick one in the Psychograph settings.");
+        return null;
+    }
+
+    warnIfSchemaEnforcementUnsupported(profile);
+    return profile;
+}
+
 async function sendJsonSchemaRequest(profileId, schemaName, schema, prompt, maxTokens) {
-    const profile = ConnectionManagerRequestService.getProfile(profileId);
+    const profile = resolveProfile(profileId);
+    if (!profile) {
+        throw new Error(`Connection profile "${profileId}" is unavailable.`);
+    }
+
     const overridePayload = profile.mode === "tc"
         ? { json_schema: schema }
         : { response_format: { type: "json_schema", json_schema: { name: schemaName, strict: true, schema } } };
@@ -805,16 +872,37 @@ function expandTriggeredSlots(config, changedSlots) {
     return config.slots.filter((slot) => expanded.has(slot));
 }
 
+// Two overlapping runs read the same slot values as their base and write back
+// one after the other, so the later run's write silently drops the earlier
+// one's change.
+let stateExtractionInFlight = false;
+
+async function runExclusiveStateExtraction(task) {
+    if (stateExtractionInFlight) {
+        console.warn("[Psychograph] State extraction already in progress, skipping this trigger.");
+        return false;
+    }
+
+    stateExtractionInFlight = true;
+    try {
+        await task();
+    } finally {
+        stateExtractionInFlight = false;
+    }
+    return true;
+}
+
 async function runAreaExtraction(areaKey, message, speaker, mode = MESSAGE_MODE) {
     const settings = ensureSettings();
     const profileId = settings.connectionProfile;
     if (!profileId) {
+        warnOnce("profile:none", NO_PROFILE_WARNING);
         console.warn(`[Psychograph] ${areaKey} extraction: no connection profile configured, skipping.`);
         return;
     }
 
     const config = AREA_SLOT_CONFIGS[areaKey];
-    const area = ensureChatState().areas[areaKey];
+    const chatState = ensureChatState();
     const slots = mode === SEED_MODE
         ? config.slots.filter((slot) => !config.slotOverrides?.[slot]?.skipOnSeed)
         : config.slots;
@@ -830,6 +918,11 @@ async function runAreaExtraction(areaKey, message, speaker, mode = MESSAGE_MODE)
         return;
     }
 
+    if (!isCurrentChatState(chatState)) {
+        console.warn(`[Psychograph] Chat changed during the ${config.label} diff, discarding the result.`);
+        return;
+    }
+
     const changedSlots = expandTriggeredSlots(config, slots.filter((slot) => diff[slot] === true))
         .filter((slot) => slots.includes(slot));
     if (changedSlots.length === 0) {
@@ -838,7 +931,7 @@ async function runAreaExtraction(areaKey, message, speaker, mode = MESSAGE_MODE)
 
     const slotUpdateSchema = buildAreaSlotUpdateSchema(config, mode);
     await Promise.all(changedSlots.map(async (slot) => {
-        const currentState = area.slots[slot] || config.slotDefaultSentinel(slot);
+        const currentState = chatState.areas[areaKey].slots[slot] || config.slotDefaultSentinel(slot);
         const updatePrompt = buildAreaSlotUpdatePrompt(config, slot, currentState, message, speaker, mode);
 
         try {
@@ -850,13 +943,21 @@ async function runAreaExtraction(areaKey, message, speaker, mode = MESSAGE_MODE)
                 AREA_SLOT_UPDATE_MAX_TOKENS,
             );
             console.log(`[Psychograph] ${config.label} update reasoning for "${slot}":`, update.reasoning);
+            if (!isCurrentChatState(chatState)) {
+                console.warn(`[Psychograph] Chat changed during the ${config.label} update for "${slot}", discarding the result.`);
+                return;
+            }
             const value = normalizeSlotValue(config, update.state);
-            area.slots[slot] = value;
+            chatState.areas[areaKey].slots[slot] = value;
             $(`#psychograph_state_${config.id}_slot_${slot}`).val(value);
         } catch (error) {
             console.error(`[Psychograph] ${config.label} update call failed for slot "${slot}":`, error);
         }
     }));
+
+    if (!isCurrentChatState(chatState)) {
+        return;
+    }
 
     getContext().saveMetadataDebounced();
 }
@@ -1003,7 +1104,7 @@ async function handleCogneeIngestion() {
     const context = getContext();
     const chat = context.chat;
     const predecessor = chat[chat.length - 2];
-    if (!predecessor || cogneeIngestedMessages.has(predecessor)) {
+    if (!isStoryMessage(predecessor) || cogneeIngestedMessages.has(predecessor)) {
         return;
     }
     cogneeIngestedMessages.add(predecessor);
@@ -1038,7 +1139,7 @@ async function backfillChatHistoryToCognee() {
     }
 
     const context = getContext();
-    const messages = context.chat.filter((m) => m.mes && m.mes.trim());
+    const messages = context.chat.filter(isStoryMessage);
     if (messages.length === 0) {
         toastr.info("No messages in this chat yet.", "Psychograph");
         return;
@@ -1174,24 +1275,27 @@ function handleChatMessageEvent() {
 
         const profileId = settings.connectionProfile;
         if (!profileId) {
+            warnOnce("profile:none", NO_PROFILE_WARNING);
             console.warn("[Psychograph] Area gate: no connection profile configured, skipping.");
             return;
         }
 
-        if (!ensureChatState().seeded) {
-            await seedChatStateFromCard(eligibleAreaKeys);
-        }
+        await runExclusiveStateExtraction(async () => {
+            if (!ensureChatState().seeded) {
+                await seedChatStateFromCard(eligibleAreaKeys);
+            }
 
-        const chat = getContext().chat;
-        const lastMessage = chat[chat.length - 1];
-        if (!lastMessage) {
-            return;
-        }
+            const chat = getContext().chat;
+            const lastMessage = chat[chat.length - 1];
+            if (!isStoryMessage(lastMessage)) {
+                return;
+            }
 
-        const speaker = readMessageSpeaker(lastMessage);
-        const gatedAreaKeys = await runAreaGate(profileId, eligibleAreaKeys, lastMessage.mes, speaker);
-        await Promise.all(gatedAreaKeys.map((areaKey) => runAreaExtraction(areaKey, lastMessage.mes, speaker)));
-        await refreshStateInject();
+            const speaker = readMessageSpeaker(lastMessage);
+            const gatedAreaKeys = await runAreaGate(profileId, eligibleAreaKeys, lastMessage.mes, speaker);
+            await Promise.all(gatedAreaKeys.map((areaKey) => runAreaExtraction(areaKey, lastMessage.mes, speaker)));
+            await refreshStateInject();
+        });
     };
 }
 
@@ -1302,10 +1406,19 @@ async function rerunAreaExtractionNow(areaKey) {
         toastr.warning("No messages in this chat yet.", "Psychograph");
         return;
     }
+    if (!isStoryMessage(lastMessage)) {
+        toastr.warning("The last message is a system or hidden message, nothing to analyze.", "Psychograph");
+        return;
+    }
 
     const config = AREA_SLOT_CONFIGS[areaKey];
-    toastr.info(`Analyzing ${config.label.toLowerCase()} for the last message…`, "Psychograph");
-    await runAreaExtraction(areaKey, lastMessage.mes, readMessageSpeaker(lastMessage));
+    const ran = await runExclusiveStateExtraction(async () => {
+        toastr.info(`Analyzing ${config.label.toLowerCase()} for the last message…`, "Psychograph");
+        await runAreaExtraction(areaKey, lastMessage.mes, readMessageSpeaker(lastMessage));
+    });
+    if (!ran) {
+        toastr.warning("Another extraction is still running, try again in a moment.", "Psychograph");
+    }
 }
 
 function readAreaSeedText(config) {
@@ -1347,10 +1460,15 @@ async function initAreaFromDescription(areaKey) {
         return;
     }
 
-    toastr.info(`Initializing ${config.label.toLowerCase()} from description…`, "Psychograph");
-    ensureChatState().seeded = true;
-    await runAreaExtraction(areaKey, text, "", SEED_MODE);
-    getContext().saveMetadataDebounced();
+    const ran = await runExclusiveStateExtraction(async () => {
+        toastr.info(`Initializing ${config.label.toLowerCase()} from description…`, "Psychograph");
+        ensureChatState().seeded = true;
+        await runAreaExtraction(areaKey, text, "", SEED_MODE);
+        getContext().saveMetadataDebounced();
+    });
+    if (!ran) {
+        toastr.warning("Another extraction is still running, try again in a moment.", "Psychograph");
+    }
 }
 
 function togglePsychographSubmenu(anchorElement) {
