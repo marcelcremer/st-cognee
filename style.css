@@ -67,6 +67,15 @@
     display: flex;
 }
 
+/* SillyTavern anchors .draggable at bottom: 0, so a taller tab grows the panel
+   upwards and drags the tab bar along with it. Anchored at the top instead,
+   the tabs stay put and the bottom edge is what moves. Two classes so this
+   wins over .draggable regardless of stylesheet order. */
+.psychograph-sheet.draggable {
+    top: 5vh;
+    bottom: auto;
+}
+
 .psychograph-sheet .psychograph-sheet-body {
     display: flex;
     flex-direction: column;
@@ -141,7 +150,7 @@
 
 .psychograph-sheet-content {
     flex: 1;
-    min-height: 0;
+    min-height: 240px;
     max-height: 60vh;
     overflow-y: auto;
 }
