@@ -536,6 +536,9 @@ const defaultSettings = {
     state: {
         areas: Object.fromEntries(STATE_AREAS.map(({ key }) => [key, { enabled: true }])),
     },
+    timeline: {
+        includeHidden: true,
+    },
 };
 
 // Which side of the conversation "Applies to" tracks — char or user —
@@ -561,6 +564,24 @@ function isStoryMessage(message) {
     return Boolean(message) && !message.is_system && Boolean(String(message.mes ?? "").trim());
 }
 
+// SillyTavern's own chat-UI messages and /comment notes carry an extra.type,
+// which a story message never does; "narrator" is the exception, since /sys
+// writes story text.
+function isChatUiMessage(message) {
+    const type = message?.extra?.type;
+    return Boolean(type) && type !== "narrator";
+}
+
+// /hide only flips is_system on an existing message, so hidden story text is
+// otherwise a normal message — and it is still a record of something that
+// happened, which is the one thing a timeline is about.
+function isTimelineMessage(message, includeHidden) {
+    if (!message || !String(message.mes ?? "").trim() || isChatUiMessage(message)) {
+        return false;
+    }
+    return includeHidden || !message.is_system;
+}
+
 const STATE_EXTRACTED_KEY = "psychographStateExtracted";
 
 // The marker lives in message.extra, not in an in-memory set, so it survives a
@@ -583,6 +604,7 @@ function ensureSettings() {
 
     const settings = extension_settings[extensionName];
     settings.cognee = Object.assign(structuredClone(defaultSettings.cognee), settings.cognee);
+    settings.timeline = Object.assign(structuredClone(defaultSettings.timeline), settings.timeline);
     settings.state = settings.state || {};
     settings.state.areas = settings.state.areas || {};
     for (const { key } of STATE_AREAS) {
@@ -730,6 +752,7 @@ function renderSettings() {
     $("#psychograph_cognee_api_key").val(settings.cognee.apiKey);
     $("#psychograph_cognee_enabled").prop("checked", settings.cognee.enabled);
     $("#psychograph_cognee_recall_enabled").prop("checked", settings.cognee.recallEnabled);
+    $("#psychograph_timeline_include_hidden").prop("checked", settings.timeline.includeHidden);
     renderCogneeChatSection();
 
     for (const { key, id } of STATE_AREAS) {
@@ -816,6 +839,11 @@ function bindSettingsEvents() {
     $("#psychograph_timeline").on("input", function () {
         ensureChatState().timeline = String($(this).val());
         getContext().saveMetadataDebounced();
+    });
+
+    $("#psychograph_timeline_include_hidden").on("change", function () {
+        ensureSettings().timeline.includeHidden = $(this).prop("checked");
+        saveSettingsDebounced();
     });
 
     $("#psychograph_timeline_build").on("click", buildTimeline);
@@ -1184,7 +1212,8 @@ async function buildTimeline() {
         return;
     }
 
-    const messages = getContext().chat.filter(isStoryMessage);
+    const includeHidden = ensureSettings().timeline.includeHidden;
+    const messages = getContext().chat.filter((message) => isTimelineMessage(message, includeHidden));
     if (messages.length === 0) {
         toastr.info("No messages in this chat yet.", "Psychograph");
         return;

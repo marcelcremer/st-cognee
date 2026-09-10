@@ -207,6 +207,26 @@ Template/system-prompt block, even though the `/inject` call itself
 succeeded - it went into the chat-history splice point instead, which is
 outside that template entirely.
 
+## What `is_system` actually means on a chat message
+
+`is_system: true` is not one thing, and it is the only flag `/hide` sets.
+Verified in `scripts/chats.js` and `scripts/slash-commands.js`:
+
+| Message | `is_system` | `extra.type` | Story text? |
+|---|---|---|---|
+| Normal user/character message | `false` | unset | yes |
+| Hidden via `/hide` | `true` | unchanged (unset) | yes — hiding only removes it from the *context*, `hideChatMessageRange` flips the flag and nothing else |
+| `/sys` narration | `false` | `narrator` | yes |
+| `/sys` that only sets a bias | `true` | `narrator` | no |
+| `/comment` note | `true` | `comment` | no (OOC) |
+| ST's own UI messages (welcome, help, hotkeys, …) | `true` | the type name | no |
+
+So `!message.is_system` alone reads as "is in the context right now", not as
+"is story text". To tell ST's own messages from story text, use `extra.type`:
+`getSystemMessageByType` stamps it on every system message, `sendCommentMessage`
+sets `comment`, and a normal message never carries it — with `narrator` as the
+one type that *is* story text.
+
 ## Debugging tip: clone, don't fetch
 
 Web-fetching SillyTavern's large core files (`index.html`, `script.js`,

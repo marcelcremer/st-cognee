@@ -131,6 +131,12 @@
                     <textarea id="psychograph_timeline" class="text_pole textarea_compact" rows="10" placeholder="- ..."></textarea>
                     <small>One bullet per entry, stored with this chat. Editable by hand &mdash; what stands here is what the next build call is told is already on the timeline.</small>
 
+                    <label class="checkbox_label" for="psychograph_timeline_include_hidden">
+                        <input id="psychograph_timeline_include_hidden" type="checkbox" />
+                        Include hidden messages
+                    </label>
+                    <small>Hiding a message keeps it out of the model's context, not out of the story &mdash; so a build reads them by default. SillyTavern's own system messages and <code>/comment</code> notes are never read either way.</small>
+
                     <div class="flex-container">
                         <div id="psychograph_timeline_build" class="menu_button">Build timeline</div>
                         <div id="psychograph_timeline_clear" class="menu_button">Clear</div>
