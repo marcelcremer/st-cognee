@@ -591,6 +591,8 @@ const defaultSettings = {
     timeline: {
         autoExtract: true,
         includeHidden: true,
+        injectEnabled: true,
+        injectLimit: 0,
     },
 };
 
@@ -819,6 +821,8 @@ function renderSettings() {
     $("#psychograph_cognee_recall_enabled").prop("checked", settings.cognee.recallEnabled);
     $("#psychograph_timeline_auto_extract").prop("checked", settings.timeline.autoExtract);
     $("#psychograph_timeline_include_hidden").prop("checked", settings.timeline.includeHidden);
+    $("#psychograph_timeline_inject_enabled").prop("checked", settings.timeline.injectEnabled);
+    $("#psychograph_timeline_inject_limit").val(settings.timeline.injectLimit);
     renderCogneeChatSection();
 
     for (const { key, id } of STATE_AREAS) {
@@ -916,6 +920,16 @@ function bindSettingsEvents() {
 
     $("#psychograph_timeline_include_hidden").on("change", function () {
         ensureSettings().timeline.includeHidden = $(this).prop("checked");
+        saveSettingsDebounced();
+    });
+
+    $("#psychograph_timeline_inject_enabled").on("change", function () {
+        ensureSettings().timeline.injectEnabled = $(this).prop("checked");
+        saveSettingsDebounced();
+    });
+
+    $("#psychograph_timeline_inject_limit").on("input", function () {
+        ensureSettings().timeline.injectLimit = Math.max(0, Number($(this).val()) || 0);
         saveSettingsDebounced();
     });
 
@@ -1195,7 +1209,7 @@ function readTargetName() {
 
 // "|" ends a slash command, so a slot value carrying one would truncate the
 // inject and run whatever followed as a command of its own.
-function sanitizeSlotValue(value) {
+function sanitizeInjectValue(value) {
     return String(value).replace(/[|\r\n]+/g, " ").trim();
 }
 
@@ -1211,7 +1225,7 @@ function buildStateSnapshot() {
 
         const config = AREA_SLOT_CONFIGS[key];
         const lines = config.slots
-            .map((slot) => [slot, sanitizeSlotValue(chatState.areas[key].slots[slot] ?? "")])
+            .map((slot) => [slot, sanitizeInjectValue(chatState.areas[key].slots[slot] ?? "")])
             .filter(([, value]) => value)
             .map(([slot, value]) => `- ${slot}: ${value}`);
         if (lines.length === 0) {
@@ -1246,15 +1260,60 @@ async function refreshStateInject() {
     );
 }
 
-async function handleStateInjectForGeneration(type, _options, dryRun) {
+async function handleInjectsForGeneration(type, _options, dryRun) {
     if (dryRun || type === "quiet") {
         return;
     }
-    await refreshStateInject();
+    await Promise.all([refreshStateInject(), refreshTimelineInject()]);
 }
 
 async function flushStateInject() {
     await getContext().executeSlashCommandsWithOptions(`/flushinject ${STATE_INJECT_ID} |`);
+}
+
+const TIMELINE_INJECT_ID = "psychograph_timeline";
+const TIMELINE_INJECT_HEADING = "## What has happened so far";
+
+// Injected whole by default. The zoom described in docs/memory-architecture.md
+// (recent entries individually, older ones merged) needs a pass of its own;
+// until then the limit is a blunt cutoff that keeps the most recent entries.
+function buildTimelineSnapshot() {
+    const settings = ensureSettings();
+    if (!settings.timeline.injectEnabled) {
+        return "";
+    }
+
+    const entries = readTimeline()
+        .split("\n")
+        .map((line) => sanitizeInjectValue(line).replace(/^[-*]\s*/, ""))
+        .filter(Boolean);
+    if (entries.length === 0) {
+        return "";
+    }
+
+    const limit = Number(settings.timeline.injectLimit) || 0;
+    const kept = limit > 0 ? entries.slice(-limit) : entries;
+    return kept.map((entry) => `- ${entry}`).join("\n");
+}
+
+async function refreshTimelineInject() {
+    if (!ensureSettings().enabled) {
+        return;
+    }
+
+    const snapshot = buildTimelineSnapshot();
+    if (!snapshot) {
+        await flushTimelineInject();
+        return;
+    }
+
+    await getContext().executeSlashCommandsWithOptions(
+        `/inject id=${TIMELINE_INJECT_ID} position=after ephemeral=true scan=true ${TIMELINE_INJECT_HEADING}\n${snapshot} |`,
+    );
+}
+
+async function flushTimelineInject() {
+    await getContext().executeSlashCommandsWithOptions(`/flushinject ${TIMELINE_INJECT_ID} |`);
 }
 
 function readTimeline() {
@@ -1354,6 +1413,7 @@ async function extractTimelineForNewMessage(settings, profileId) {
     markTimelineExtracted(message);
 
     await queueTimelineWork(() => extractTimelineEntry(profileId, message));
+    await refreshTimelineInject();
 }
 
 let timelineBuildRunning = false;
@@ -1711,8 +1771,9 @@ function bindChatEvents() {
     eventSource.on(event_types.GENERATION_AFTER_COMMANDS, handleCogneeRecall);
     eventSource.on(event_types.GENERATION_ENDED, flushCogneeRecallInject);
 
-    eventSource.on(event_types.GENERATION_AFTER_COMMANDS, handleStateInjectForGeneration);
+    eventSource.on(event_types.GENERATION_AFTER_COMMANDS, handleInjectsForGeneration);
     eventSource.on(event_types.GENERATION_ENDED, flushStateInject);
+    eventSource.on(event_types.GENERATION_ENDED, flushTimelineInject);
 
     // Slot inputs show the current chat's state — without this they'd keep
     // displaying whatever chat was open when the panel was last rendered.
@@ -1932,6 +1993,14 @@ function buildSheetTimelinePaneHtml() {
                     Include hidden messages
                 </label>
                 <small>Hiding a message keeps it out of the model's context, not out of the story.</small>
+
+                <label class="checkbox_label" for="psychograph_timeline_inject_enabled">
+                    <input id="psychograph_timeline_inject_enabled" type="checkbox" />
+                    Inject into the prompt
+                </label>
+                <label for="psychograph_timeline_inject_limit">Most recent entries only (0 = all)</label>
+                <input id="psychograph_timeline_inject_limit" type="number" min="0" step="1" class="text_pole" />
+
                 <div class="flex-container">
                     <div id="psychograph_timeline_build" class="menu_button">Build timeline</div>
                     <div id="psychograph_timeline_clear" class="menu_button">Clear</div>
