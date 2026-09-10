@@ -924,6 +924,12 @@ function bindSettingsEvents() {
 }
 
 function parseJsonResponse(content) {
+    // The chat-completion path JSON.parses the response itself once a schema
+    // is in the request, so there is nothing left to parse here.
+    if (content && typeof content === "object") {
+        return content;
+    }
+
     const text = String(content).trim();
     try {
         return JSON.parse(text);
@@ -951,21 +957,22 @@ function warnOnce(key, message) {
 
 const NO_PROFILE_WARNING = "No connection profile selected for Psychograph — state extraction stays off until you pick one.";
 
-// The only backends SillyTavern forwards json_schema to; everywhere else
-// enforcement silently no-ops, see docs/sillytavern-ui-notes.md.
+// Text completion is the picky mode: SillyTavern only forwards json_schema to
+// these two, while every chat-completion source gets a response_format built
+// for it. See docs/sillytavern-ui-notes.md.
 const SCHEMA_ENFORCING_APIS = new Set(["tabby", "llamacpp"]);
 
 function warnIfSchemaEnforcementUnsupported(profile) {
-    const suffix = "Extraction falls back to the prompt alone, which small models follow less reliably.";
-
     if (profile.mode !== "tc") {
-        warnOnce(`schema:${profile.id}`, `"${profile.name}" is a chat-completion profile and SillyTavern doesn't send a JSON schema for those. ${suffix}`);
         return;
     }
 
     const api = String(profile.api ?? "").toLowerCase();
     if (api && !SCHEMA_ENFORCING_APIS.has(api)) {
-        warnOnce(`schema:${profile.id}`, `SillyTavern doesn't forward the JSON schema to ${api}, only to TabbyAPI and llama.cpp. ${suffix}`);
+        warnOnce(
+            `schema:${profile.id}`,
+            `SillyTavern doesn't forward the JSON schema to ${api}, only to TabbyAPI and llama.cpp. Extraction falls back to the prompt alone, which small models follow less reliably.`,
+        );
     }
 }
 
@@ -992,9 +999,12 @@ async function sendJsonSchemaRequest(profileId, schemaName, schema, prompt, maxT
         throw new Error(`Connection profile "${profileId}" is unavailable.`);
     }
 
+    // Both modes read the same field name but not the same shape: text
+    // completion takes the bare schema (as the Tabby settings field does),
+    // chat completion the wrapper its backend translates per provider.
     const overridePayload = profile.mode === "tc"
         ? { json_schema: schema }
-        : { response_format: { type: "json_schema", json_schema: { name: schemaName, strict: true, schema } } };
+        : { json_schema: { name: schemaName, strict: true, value: schema } };
 
     const response = await ConnectionManagerRequestService.sendRequest(
         profileId,

@@ -63,8 +63,20 @@ reliably force structured output end-to-end:
   `TABBY` or `LLAMACPP` (`guided_json` for Aphrodite). Any other type
   (including a generic/OpenAI-compatible text-completion source) silently
   drops it — no error, the field is just absent from the outgoing request.
-- **Chat Completion (`cc`)**: no evidence of `response_format`/`json_schema`
-  support in SillyTavern's chat-completion payload builder at all.
+- **Chat Completion (`cc`)**: supported, but under a different field than the
+  OpenAI wire format. The client sends `json_schema: {name, value, strict}`
+  (note `value`, not `schema`) and `src/endpoints/backends/chat-completions.js`
+  translates it per provider — `response_format` for OpenAI-compatible sources,
+  `input_schema` on a forced tool call for Claude, `responseSchema` for Gemini,
+  and a system message spelling out the schema for the ones that support
+  nothing (AI21, DeepSeek). A generic fallback at the end of the handler
+  covers every source that didn't set `response_format` itself, so `CUSTOM`
+  (a self-hosted OpenAI-compatible endpoint) is covered too. Sending
+  `response_format` directly does *not* work: the server builds its request
+  body from named fields and never passes it through.
+- On the `cc` path only, `ChatCompletionService` also `JSON.parse`s the reply
+  when `json_schema` was in the request, so `response.content` comes back as
+  an **object** rather than a string. Parse defensively either way.
 
 Confirmed by testing directly (curl) against a real backend: when
 enforcement *does* work, it's real grammar-constrained decoding and it
