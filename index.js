@@ -24,6 +24,7 @@ const SEED_MODE = "seed";
 const AREA_DIFF_MAX_TOKENS = 250;
 const AREA_SLOT_UPDATE_MAX_TOKENS = 200;
 const AREA_GATE_MAX_TOKENS = 200;
+const TIMELINE_ENTRY_MAX_TOKENS = 300;
 
 // Values a model reaches for when a slot holds nothing. Outside Clothes these
 // are an absence and must not reach the prompt; inside Clothes "none" is itself
@@ -458,6 +459,71 @@ function buildAreaGateSchema(eligibleAreaKeys) {
     };
 }
 
+// Shown in place of the entry list while the timeline is still empty: an empty
+// section would be dropped from the document entirely, leaving the model
+// without the heading the rules below refer back to.
+const TIMELINE_EMPTY_PLACEHOLDER = "Nothing yet.";
+
+// Under evaluation against the user's own model — see CLAUDE.md before
+// touching any of this wording.
+function buildTimelinePrompt(currentTimeline, speaker, message) {
+    const context = getContext();
+
+    return buildPromptDocument([
+        {
+            heading: "# Task Description",
+            content: `Your job is to check a recent excerpt of the roleplay between ${context.name1} and ${context.name2} for a new fact worth adding to the timeline, and to write it if one exists. You are NOT continuing the roleplay, judging the content, or writing dialogue.`,
+        },
+        {
+            heading: "## The test",
+            content: `Ask yourself: if I skip this excerpt, what would I no longer know an hour from now that isn't already covered by an entry below — even in different words, or with a different specific trigger or example? Log only that — a new fact that now holds, a decision that was made, a state that changed.
+
+If the excerpt only contains talking, asking, feeling, reacting, or restating/reinforcing something that's already true — without anything actually becoming true or false as a result — there is nothing to log yet. Set "significant" to false.
+
+SARCASM: if something is exaggerated or not meant literally, don't record it as literal fact.`,
+        },
+        {
+            heading: "## Already on the timeline",
+            content: currentTimeline.trim() || TIMELINE_EMPTY_PLACEHOLDER,
+        },
+        {
+            heading: "## Writing the entry",
+            content: bulletList([
+                "Resolve pronouns and nicknames to actual character names.",
+                "One short sentence, neutral past tense, stating only what is now true — no framing of how important, surprising, or pivotal it is.",
+                "Match the style of the existing entries above.",
+                "Reasoning is just for debug — one concise sentence is enough.",
+            ]),
+        },
+        {
+            heading: "## Output format",
+            content: `Respond with ONLY a JSON object (no markdown code fence), using exactly this shape:\n{"reasoning": "...", "significant": true | false, "entry": "..." | null}`,
+        },
+    ], speaker, message);
+}
+
+function buildTimelineSchema() {
+    return {
+        type: "object",
+        properties: {
+            reasoning: {
+                type: "string",
+                description: "One concise sentence working through the test above, before answering.",
+            },
+            significant: {
+                type: "boolean",
+                description: "True if the excerpt establishes something the timeline does not already cover.",
+            },
+            entry: {
+                type: ["string", "null"],
+                description: "The new timeline entry as one short sentence, or null when there is nothing to log.",
+            },
+        },
+        required: ["reasoning", "significant", "entry"],
+        additionalProperties: false,
+    };
+}
+
 const defaultSettings = {
     enabled: true,
     connectionProfile: "",
@@ -561,6 +627,9 @@ function ensureChatState() {
     }
     if (chatState.seeded === undefined) {
         chatState.seeded = hasExtractedState(chatState);
+    }
+    if (chatState.timeline === undefined) {
+        chatState.timeline = "";
     }
 
     return chatState;
@@ -677,6 +746,7 @@ function renderSettings() {
 function renderChatState() {
     const chatState = ensureChatState();
     $("#psychograph_state_target").val(chatState.target);
+    $("#psychograph_timeline").val(chatState.timeline);
 
     for (const { key, id } of STATE_AREAS) {
         const slots = chatState.areas[key].slots;
@@ -742,6 +812,25 @@ function bindSettingsEvents() {
     });
 
     $("#psychograph_cognee_backfill").on("click", backfillChatHistoryToCognee);
+
+    $("#psychograph_timeline").on("input", function () {
+        ensureChatState().timeline = String($(this).val());
+        getContext().saveMetadataDebounced();
+    });
+
+    $("#psychograph_timeline_build").on("click", buildTimeline);
+
+    $("#psychograph_timeline_clear").on("click", async function () {
+        const context = getContext();
+        const confirmed = await context.callGenericPopup(
+            "Clear this chat's timeline? The entries only exist here.",
+            context.POPUP_TYPE.CONFIRM,
+        );
+        if (confirmed !== context.POPUP_RESULT.AFFIRMATIVE) {
+            return;
+        }
+        writeTimeline("");
+    });
 
     $("#psychograph_state_target").on("change", function () {
         ensureChatState().target = String($(this).val());
@@ -1054,6 +1143,103 @@ async function handleStateInjectForGeneration(type, _options, dryRun) {
 
 async function flushStateInject() {
     await getContext().executeSlashCommandsWithOptions(`/flushinject ${STATE_INJECT_ID} |`);
+}
+
+function readTimeline() {
+    return ensureChatState().timeline ?? "";
+}
+
+function writeTimeline(text) {
+    ensureChatState().timeline = text;
+    $("#psychograph_timeline").val(text);
+    getContext().saveMetadataDebounced();
+}
+
+// The model is asked for a sentence, not for markup, but it sees a bullet list
+// in the prompt and sometimes answers in kind.
+function normalizeTimelineEntry(entry) {
+    return String(entry ?? "").replace(/\s+/g, " ").replace(/^[-*]\s*/, "").trim();
+}
+
+function appendTimelineEntry(entry) {
+    const existing = readTimeline().trimEnd();
+    writeTimeline(existing ? `${existing}\n- ${entry}` : `- ${entry}`);
+}
+
+let timelineBuildRunning = false;
+let timelineBuildCancelled = false;
+
+// Every message is offered to the model, including ones an earlier build
+// already saw: what keeps a rebuild from duplicating entries is the timeline
+// itself being in the prompt, not a per-message marker.
+async function buildTimeline() {
+    if (timelineBuildRunning) {
+        timelineBuildCancelled = true;
+        return;
+    }
+
+    const profileId = ensureSettings().connectionProfile;
+    if (!profileId) {
+        toastr.warning(NO_PROFILE_WARNING, "Psychograph");
+        return;
+    }
+
+    const messages = getContext().chat.filter(isStoryMessage);
+    if (messages.length === 0) {
+        toastr.info("No messages in this chat yet.", "Psychograph");
+        return;
+    }
+
+    const chatState = ensureChatState();
+    const schema = buildTimelineSchema();
+    timelineBuildRunning = true;
+    timelineBuildCancelled = false;
+    $("#psychograph_timeline_build").text("Stop");
+
+    let added = 0;
+    try {
+        for (let i = 0; i < messages.length; i++) {
+            if (timelineBuildCancelled) {
+                break;
+            }
+            if (!isCurrentChatState(chatState)) {
+                console.warn("[Psychograph] Chat changed during the timeline build, stopping.");
+                break;
+            }
+
+            const message = messages[i];
+            $("#psychograph_timeline_status").text(`Message ${i + 1}/${messages.length}, ${added} entries added…`);
+
+            try {
+                const prompt = buildTimelinePrompt(readTimeline(), readMessageSpeaker(message), message.mes);
+                const result = await sendJsonSchemaRequest(profileId, "timeline_entry", schema, prompt, TIMELINE_ENTRY_MAX_TOKENS);
+                console.log(`[Psychograph] Timeline reasoning for message ${i + 1}:`, result.reasoning);
+
+                const entry = normalizeTimelineEntry(result.entry);
+                if (result.significant !== true || !entry) {
+                    continue;
+                }
+                if (!isCurrentChatState(chatState)) {
+                    console.warn("[Psychograph] Chat changed during the timeline build, discarding the entry.");
+                    break;
+                }
+                appendTimelineEntry(entry);
+                added++;
+            } catch (error) {
+                console.error(`[Psychograph] Timeline call failed for message ${i + 1}:`, error);
+            }
+        }
+
+        if (timelineBuildCancelled) {
+            toastr.info(`Stopped after ${added} new entries.`, "Psychograph");
+        } else {
+            toastr.success(`Timeline built, ${added} new entries.`, "Psychograph");
+        }
+    } finally {
+        timelineBuildRunning = false;
+        $("#psychograph_timeline_build").text("Build timeline");
+        $("#psychograph_timeline_status").text("");
+    }
 }
 
 // Stored in chat_metadata (saved inside the chat file itself) rather than

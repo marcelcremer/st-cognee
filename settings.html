@@ -123,11 +123,19 @@
             <hr>
             <div class="inline-drawer">
                 <div class="inline-drawer-toggle inline-drawer-header">
-                    <span>Core Memories</span>
+                    <span>Timeline</span>
                     <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
                 </div>
                 <div class="inline-drawer-content">
-                    <small>Coming soon.</small>
+                    <label for="psychograph_timeline">Current timeline</label>
+                    <textarea id="psychograph_timeline" class="text_pole textarea_compact" rows="10" placeholder="- ..."></textarea>
+                    <small>One bullet per entry, stored with this chat. Editable by hand &mdash; what stands here is what the next build call is told is already on the timeline.</small>
+
+                    <div class="flex-container">
+                        <div id="psychograph_timeline_build" class="menu_button">Build timeline</div>
+                        <div id="psychograph_timeline_clear" class="menu_button">Clear</div>
+                    </div>
+                    <small id="psychograph_timeline_status"></small>
                 </div>
             </div>
 
