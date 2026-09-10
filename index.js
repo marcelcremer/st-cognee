@@ -652,6 +652,47 @@ function markStateExtracted(message) {
     getContext().saveMetadataDebounced();
 }
 
+// One snapshot, taken before a round of extraction rather than per area: what
+// "Restore previous" undoes is everything the last run changed, which is how
+// it reads on the sheet. Restoring swaps rather than drops the snapshot, so a
+// restore can be taken back too.
+const UNDO_KEYS = ["areas", "timeline"];
+
+function captureUndoSnapshot(label) {
+    const chatState = ensureChatState();
+    chatState.previous = {
+        label,
+        data: Object.fromEntries(UNDO_KEYS.map((key) => [key, structuredClone(chatState[key])])),
+    };
+    renderSheetFooter();
+}
+
+function restorePreviousState() {
+    const chatState = ensureChatState();
+    const previous = chatState.previous;
+    if (!previous) {
+        toastr.info("Nothing to restore yet.", "Psychograph");
+        return;
+    }
+
+    const current = Object.fromEntries(UNDO_KEYS.map((key) => [key, structuredClone(chatState[key])]));
+    for (const key of UNDO_KEYS) {
+        chatState[key] = structuredClone(previous.data[key]);
+    }
+    chatState.previous = { label: `undo of "${previous.label}"`, data: current };
+
+    getContext().saveMetadataDebounced();
+    renderChatState();
+    toastr.success(`Restored what was there before ${previous.label}.`, "Psychograph");
+}
+
+function noteLastExtraction(message, label) {
+    const index = getContext().chat.indexOf(message);
+    ensureChatState().lastExtraction = { index, label };
+    getContext().saveMetadataDebounced();
+    renderSheetFooter();
+}
+
 const TIMELINE_EXTRACTED_KEY = "psychographTimelineExtracted";
 
 function isTimelineExtracted(message) {
@@ -944,6 +985,7 @@ function bindSettingsEvents() {
         if (confirmed !== context.POPUP_RESULT.AFFIRMATIVE) {
             return;
         }
+        captureUndoSnapshot("clearing the timeline");
         writeTimeline("");
     });
 
@@ -1442,6 +1484,7 @@ async function buildTimeline() {
     }
 
     const chatState = ensureChatState();
+    captureUndoSnapshot("the timeline build");
     timelineBuildRunning = true;
     timelineBuildCancelled = false;
     $("#psychograph_timeline_build").text("Stop");
@@ -1716,6 +1759,8 @@ function handleChatMessageEvent() {
             return;
         }
 
+        captureUndoSnapshot("the last message");
+
         // The two layers write to different places and neither reads the
         // other's result, so the timeline call rides alongside the State pass
         // rather than after it.
@@ -1750,6 +1795,7 @@ async function extractStateForNewMessage(settings, profileId) {
         markStateExtracted(message);
 
         const speaker = readMessageSpeaker(message);
+        noteLastExtraction(message, "state");
         const gatedAreaKeys = await runAreaGate(profileId, eligibleAreaKeys, message.mes, speaker);
         await Promise.all(gatedAreaKeys.map((areaKey) => runAreaExtraction(areaKey, message.mes, speaker)));
         await refreshStateInject();
@@ -1872,7 +1918,9 @@ async function rerunAreaExtractionNow(areaKey) {
     const config = AREA_SLOT_CONFIGS[areaKey];
     const ran = await runExclusiveStateExtraction(async () => {
         toastr.info(`Analyzing ${config.label.toLowerCase()} for the last message…`, "Psychograph");
+        captureUndoSnapshot(`the ${config.label.toLowerCase()} extraction`);
         await runAreaExtraction(areaKey, lastMessage.mes, readMessageSpeaker(lastMessage));
+        noteLastExtraction(lastMessage, config.label);
     });
     if (!ran) {
         toastr.warning("Another extraction is still running, try again in a moment.", "Psychograph");
@@ -1920,6 +1968,7 @@ async function initAreaFromDescription(areaKey) {
 
     const ran = await runExclusiveStateExtraction(async () => {
         toastr.info(`Initializing ${config.label.toLowerCase()} from description…`, "Psychograph");
+        captureUndoSnapshot(`initializing ${config.label.toLowerCase()} from the card`);
         ensureChatState().seeded = true;
         await runAreaExtraction(areaKey, text, "", SEED_MODE);
         getContext().saveMetadataDebounced();
@@ -2035,7 +2084,10 @@ function buildSheetBodyHtml() {
         </div>
         <div class="psychograph-sheet-footer">
             <span id="psychograph_sheet_status" class="psychograph-sheet-hint"></span>
-            <div id="psychograph_sheet_extract" class="menu_button">Extract now</div>
+            <div class="psychograph-sheet-footer-buttons">
+                <div id="psychograph_sheet_restore" class="menu_button" title="Undo what the last extraction changed">Restore previous</div>
+                <div id="psychograph_sheet_extract" class="menu_button">Extract now</div>
+            </div>
         </div>
     `;
 }
@@ -2103,6 +2155,16 @@ function renderSheetHeader() {
     $("#psychograph_sheet_character").text(readTargetName());
     const entries = readTimeline().split("\n").filter((line) => line.trim()).length;
     $("#psychograph_sheet_timeline_count").text(`${entries} ${entries === 1 ? "entry" : "entries"}`);
+    renderSheetFooter();
+}
+
+function renderSheetFooter() {
+    const chatState = ensureChatState();
+    const last = chatState.lastExtraction;
+    $("#psychograph_sheet_status").text(
+        last && last.index >= 0 ? `last extraction · msg #${last.index}` : "nothing extracted yet",
+    );
+    $("#psychograph_sheet_restore").toggleClass("disabled", !chatState.previous);
 }
 
 async function extractActiveSheetTabNow() {
@@ -2127,6 +2189,7 @@ async function rerunTimelineExtractionNow() {
     }
 
     toastr.info("Checking the last message for a timeline entry…", "Psychograph");
+    captureUndoSnapshot("the timeline entry");
     const outcome = await queueTimelineWork(() => extractTimelineEntry(settings.connectionProfile, message));
     markTimelineExtracted(message);
 
@@ -2155,6 +2218,7 @@ function bindSheetEvents() {
     });
 
     $("#psychograph_sheet_extract").on("click", extractActiveSheetTabNow);
+    $("#psychograph_sheet_restore").on("click", restorePreviousState);
 
     for (const { key } of STATE_AREAS) {
         $(`#psychograph_sheet_init_${AREA_SLOT_CONFIGS[key].id}`).on("click", async function () {

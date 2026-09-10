@@ -90,6 +90,13 @@
     align-items: baseline;
     gap: 0.6em;
     min-width: 0;
+    /* SillyTavern floats .panelControlBar over the panel's top right corner,
+       so the title has to leave room for the grabber and the close button. */
+    padding-right: 4em;
+}
+
+.psychograph-sheet .drag-grabber {
+    opacity: 0.6;
 }
 
 .psychograph-sheet-heading {
@@ -232,4 +239,17 @@
 .psychograph-sheet-hint {
     font-size: 0.8em;
     opacity: 0.6;
+}
+
+.psychograph-sheet-footer-buttons {
+    display: flex;
+    gap: 4px;
+}
+
+/* The panel is narrower than SillyTavern's own, where menu_button's padding
+   still leaves a button on one line. */
+.psychograph-sheet-footer .menu_button {
+    white-space: nowrap;
+    padding: 4px 8px;
+    margin: 0;
 }
