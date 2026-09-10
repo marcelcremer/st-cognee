@@ -53,42 +53,174 @@
     color: var(--SmartThemeUi);
 }
 
-.psychograph-tools-menu {
-    position: absolute;
-    transform: translateY(-100%);
-    z-index: 9999;
+/* Character sheet panel. Sits in #movingDivs as one of SillyTavern's own
+   floating panels, so .draggable already provides position, size and chrome —
+   everything below is only the sheet's own layout. */
+.psychograph-sheet {
     display: none;
-    min-width: 10em;
-    border-radius: 6px;
+    flex-direction: column;
+}
+
+/* Shown by class, not by jQuery's fadeIn: an inline display:block would
+   outrank the flex column the panel's layout is built on. */
+.psychograph-sheet.shown {
+    display: flex;
+}
+
+.psychograph-sheet .psychograph-sheet-body {
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    flex: 1;
+    padding: 0 8px 6px;
+    gap: 6px;
+}
+
+.psychograph-sheet-title {
+    display: flex;
+    align-items: baseline;
+    gap: 0.6em;
+    min-width: 0;
+}
+
+.psychograph-sheet-heading {
+    font-weight: bold;
+}
+
+.psychograph-sheet-subject {
+    font-size: 0.85em;
+    opacity: 0.7;
+    white-space: nowrap;
     overflow: hidden;
-    background-color: var(--SmartThemeBlurTintColor);
-    border: 1px solid var(--SmartThemeBorderColor, var(--SmartThemeBodyColor));
-    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.4);
+    text-overflow: ellipsis;
 }
 
-.psychograph-tools-menu.shown {
-    display: block;
+.psychograph-sheet-tabs {
+    display: flex;
+    gap: 2px;
+    border-bottom: 1px solid var(--SmartThemeBorderColor, var(--SmartThemeBodyColor));
 }
 
-.psychograph-tools-menu .list-group-item {
+.psychograph-sheet-tab {
+    padding: 5px 10px;
+    font-size: 0.9em;
+    cursor: pointer;
+    white-space: nowrap;
+    border-radius: 4px 4px 0 0;
+    opacity: 0.7;
+    border-bottom: 2px solid transparent;
+}
+
+.psychograph-sheet-tab:hover {
+    background-color: var(--SmartThemeHover);
+    opacity: 1;
+}
+
+.psychograph-sheet-tab.active {
+    opacity: 1;
+    border-bottom-color: var(--SmartThemeQuoteColor, var(--SmartThemeBodyColor));
+}
+
+.psychograph-sheet-applies {
     display: flex;
     align-items: center;
     gap: 0.5em;
-    padding: 8px 12px;
-    cursor: pointer;
+}
+
+.psychograph-sheet-applies label {
+    font-size: 0.8em;
+    text-transform: uppercase;
+    opacity: 0.7;
     white-space: nowrap;
 }
 
-.psychograph-tools-menu .psychograph-menu-divider {
-    padding: 6px 12px 2px;
+.psychograph-sheet-applies select {
+    flex: 1;
+    min-width: 0;
+}
+
+.psychograph-sheet-content {
+    flex: 1;
+    min-height: 0;
+    max-height: 60vh;
+    overflow-y: auto;
+}
+
+.psychograph-sheet-pane {
+    display: none;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.psychograph-sheet-pane.active {
+    display: flex;
+}
+
+.psychograph-sheet-pane-header {
+    display: flex;
+    align-items: center;
+    gap: 0.5em;
+}
+
+.psychograph-sheet-count {
+    margin-left: auto;
     font-size: 0.8em;
-    font-weight: bold;
-    opacity: 0.7;
-    text-transform: uppercase;
+    opacity: 0.6;
     white-space: nowrap;
+}
+
+.psychograph-sheet-options-toggle {
+    cursor: pointer;
+    opacity: 0.7;
+}
+
+.psychograph-sheet-options-toggle:hover {
+    opacity: 1;
+}
+
+/* Toggled by class rather than the hidden attribute: an author-level display
+   rule outranks the browser's [hidden] default, which cost an evening once. */
+.psychograph-sheet-options {
+    display: none;
+    flex-direction: column;
+    gap: 4px;
+    padding: 6px;
+    border-radius: 4px;
+    background-color: var(--black30a, rgba(0, 0, 0, 0.3));
+}
+
+.psychograph-sheet-options.shown {
+    display: flex;
+}
+
+.psychograph-sheet-options small {
+    margin: 0;
+}
+
+.psychograph-sheet-fields {
+    display: flex;
+    flex-direction: column;
+}
+
+.psychograph-sheet-fields label {
+    font-size: 0.9em;
+    margin-top: 0.35em;
+}
+
+.psychograph-sheet-fields textarea {
+    resize: vertical;
+}
+
+.psychograph-sheet-footer {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.5em;
+    padding-top: 4px;
     border-top: 1px solid var(--SmartThemeBorderColor, var(--SmartThemeBodyColor));
 }
 
-.psychograph-tools-menu .psychograph-menu-divider:first-child {
-    border-top: none;
+.psychograph-sheet-hint {
+    font-size: 0.8em;
+    opacity: 0.6;
 }

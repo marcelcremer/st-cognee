@@ -9,6 +9,7 @@
                 <input id="psychograph_enabled" type="checkbox" />
                 Enable Psychograph
             </label>
+            <small>The character sheet itself lives in a panel next to the chat &mdash; open it with the brain button above the input box.</small>
 
             <hr>
             <div class="inline-drawer">
@@ -19,135 +20,7 @@
                 <div class="inline-drawer-content">
                     <label for="psychograph_connection_profile">SillyTavern connection profile</label>
                     <select id="psychograph_connection_profile" class="text_pole"></select>
-                    <small>Connection used for Psychograph's own extraction calls (state, core memories, lore). "SillyTavern default" uses whatever connection is currently active.</small>
-                </div>
-            </div>
-
-            <hr>
-            <div class="inline-drawer">
-                <div class="inline-drawer-toggle inline-drawer-header">
-                    <span>State</span>
-                    <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
-                </div>
-                <div class="inline-drawer-content">
-                    <div class="inline-drawer">
-                        <div class="inline-drawer-toggle inline-drawer-header">
-                            <span>General</span>
-                            <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
-                        </div>
-                        <div class="inline-drawer-content">
-                            <label for="psychograph_state_target">Applies to</label>
-                            <select id="psychograph_state_target">
-                                <option value="char">Character</option>
-                                <option value="user">User</option>
-                            </select>
-                            <small>Whether tracked state reflects the character or the user persona. Extraction runs on every message either way — this decides whose state the character-scoped areas track.</small>
-                        </div>
-                    </div>
-
-                    <div class="inline-drawer">
-                        <div class="inline-drawer-toggle inline-drawer-header">
-                            <span>Clothes</span>
-                            <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
-                        </div>
-                        <div class="inline-drawer-content">
-                            <label class="checkbox_label" for="psychograph_state_clothes_enabled">
-                                <input id="psychograph_state_clothes_enabled" type="checkbox" />
-                                Enabled
-                            </label>
-
-                            <label>Current state</label>
-                            <label for="psychograph_state_clothes_slot_top">Top</label>
-                            <input id="psychograph_state_clothes_slot_top" type="text" class="text_pole" placeholder="none" />
-                            <label for="psychograph_state_clothes_slot_bottom">Bottom</label>
-                            <input id="psychograph_state_clothes_slot_bottom" type="text" class="text_pole" placeholder="none" />
-                            <label for="psychograph_state_clothes_slot_underwear">Underwear</label>
-                            <input id="psychograph_state_clothes_slot_underwear" type="text" class="text_pole" placeholder="none" />
-                            <label for="psychograph_state_clothes_slot_legwear">Legwear</label>
-                            <input id="psychograph_state_clothes_slot_legwear" type="text" class="text_pole" placeholder="none" />
-                            <label for="psychograph_state_clothes_slot_footwear">Footwear</label>
-                            <input id="psychograph_state_clothes_slot_footwear" type="text" class="text_pole" placeholder="none" />
-                            <label for="psychograph_state_clothes_slot_accessories">Accessories</label>
-                            <input id="psychograph_state_clothes_slot_accessories" type="text" class="text_pole" placeholder="none" />
-                            <label for="psychograph_state_clothes_slot_hair">Hair</label>
-                            <input id="psychograph_state_clothes_slot_hair" type="text" class="text_pole" placeholder="none" />
-                            <label for="psychograph_state_clothes_slot_makeup">Makeup</label>
-                            <input id="psychograph_state_clothes_slot_makeup" type="text" class="text_pole" placeholder="none" />
-                        </div>
-                    </div>
-
-                    <div class="inline-drawer">
-                        <div class="inline-drawer-toggle inline-drawer-header">
-                            <span>Body</span>
-                            <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
-                        </div>
-                        <div class="inline-drawer-content">
-                            <label class="checkbox_label" for="psychograph_state_physical_state_enabled">
-                                <input id="psychograph_state_physical_state_enabled" type="checkbox" />
-                                Enabled
-                            </label>
-
-                            <label>Current state</label>
-                            <label for="psychograph_state_physical_state_slot_condition">Condition</label>
-                            <input id="psychograph_state_physical_state_slot_condition" type="text" class="text_pole" placeholder="injury, illness, exhaustion, hunger, intoxication" />
-                            <label for="psychograph_state_physical_state_slot_constraint">Constraint</label>
-                            <input id="psychograph_state_physical_state_slot_constraint" type="text" class="text_pole" placeholder="what limits their freedom to act" />
-                            <label for="psychograph_state_physical_state_slot_bodyChanges">Body Changes</label>
-                            <input id="psychograph_state_physical_state_slot_bodyChanges" type="text" class="text_pole" placeholder="lasting differences from the profile description" />
-                        </div>
-                    </div>
-
-                    <div class="inline-drawer">
-                        <div class="inline-drawer-toggle inline-drawer-header">
-                            <span>Scene</span>
-                            <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
-                        </div>
-                        <div class="inline-drawer-content">
-                            <label class="checkbox_label" for="psychograph_state_situational_enabled">
-                                <input id="psychograph_state_situational_enabled" type="checkbox" />
-                                Enabled
-                            </label>
-
-                            <label>Current state</label>
-                            <label for="psychograph_state_situational_slot_location">Location</label>
-                            <input id="psychograph_state_situational_slot_location" type="text" class="text_pole" placeholder="where they are, and how private or exposed" />
-                            <label for="psychograph_state_situational_slot_presentPeople">Present People</label>
-                            <input id="psychograph_state_situational_slot_presentPeople" type="text" class="text_pole" placeholder="who is in the scene" />
-                            <label for="psychograph_state_situational_slot_timeOfDay">Time of Day</label>
-                            <input id="psychograph_state_situational_slot_timeOfDay" type="text" class="text_pole" placeholder="not established" />
-                        </div>
-                    </div>
-                </div>
-            </div>
-
-            <hr>
-            <div class="inline-drawer">
-                <div class="inline-drawer-toggle inline-drawer-header">
-                    <span>Timeline</span>
-                    <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
-                </div>
-                <div class="inline-drawer-content">
-                    <label for="psychograph_timeline">Current timeline</label>
-                    <textarea id="psychograph_timeline" class="text_pole textarea_compact" rows="10" placeholder="- ..."></textarea>
-                    <small>One bullet per entry, stored with this chat. Editable by hand &mdash; what stands here is what the next build call is told is already on the timeline.</small>
-
-                    <label class="checkbox_label" for="psychograph_timeline_auto_extract">
-                        <input id="psychograph_timeline_auto_extract" type="checkbox" />
-                        Extract on every message
-                    </label>
-                    <small>Runs alongside the state extraction, on the message before the newest one &mdash; the newest is still swipeable, and an entry written from a swipe that gets replaced cannot be taken back out.</small>
-
-                    <label class="checkbox_label" for="psychograph_timeline_include_hidden">
-                        <input id="psychograph_timeline_include_hidden" type="checkbox" />
-                        Include hidden messages
-                    </label>
-                    <small>Hiding a message keeps it out of the model's context, not out of the story &mdash; so a build reads them by default. SillyTavern's own system messages and <code>/comment</code> notes are never read either way.</small>
-
-                    <div class="flex-container">
-                        <div id="psychograph_timeline_build" class="menu_button">Build timeline</div>
-                        <div id="psychograph_timeline_clear" class="menu_button">Clear</div>
-                    </div>
-                    <small id="psychograph_timeline_status"></small>
+                    <small>Connection used for Psychograph's own extraction calls (state, timeline, lore). "SillyTavern default" uses whatever connection is currently active.</small>
                 </div>
             </div>
 

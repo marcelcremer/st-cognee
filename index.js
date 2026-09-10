@@ -2,6 +2,8 @@ import { extension_settings, getContext } from "../../../extensions.js";
 import { saveSettingsDebounced } from "../../../../script.js";
 import { eventSource, event_types } from "../../../events.js";
 import { ConnectionManagerRequestService } from "../../shared.js";
+import { dragElement } from "../../../RossAscends-mods.js";
+import { loadMovingUIState } from "../../../power-user.js";
 
 const extensionName = "st-psychograph";
 const extensionFolderPath = `scripts/extensions/third-party/${extensionName}`;
@@ -46,6 +48,7 @@ const AREA_SLOT_CONFIGS = {
         label: "Clothes",
         icon: "fa-shirt",
         slots: CLOTHING_SLOTS,
+        slotPlaceholders: Object.fromEntries(CLOTHING_SLOTS.map((slot) => [slot, "none"])),
         seedField: "target",
         groupDescription: "Clothes slots describe, where something is worn and not necessarily a category.",
         diffRules: [
@@ -113,6 +116,11 @@ const AREA_SLOT_CONFIGS = {
         label: "Body",
         icon: "fa-heart-pulse",
         slots: PHYSICAL_STATE_SLOTS,
+        slotPlaceholders: {
+            condition: "injury, illness, exhaustion, hunger, intoxication",
+            constraint: "what limits their freedom to act",
+            bodyChanges: "lasting differences from the profile description",
+        },
         seedField: "target",
         emptyValue: "",
         groupDescription: "Body slots track the character's body and what currently limits their ability to act.",
@@ -175,6 +183,11 @@ const AREA_SLOT_CONFIGS = {
         label: "Scene",
         icon: "fa-location-dot",
         slots: SITUATIONAL_SLOTS,
+        slotPlaceholders: {
+            location: "where they are, and how private or exposed",
+            presentPeople: "who is in the scene",
+            timeOfDay: "not established",
+        },
         seedField: "scenario",
         emptyValue: "",
         groupDescription: "Scene slots describe the scene the characters are currently in - where they are, who is with them, and when it is - not their actions or dialogue.",
@@ -823,6 +836,7 @@ function renderChatState() {
     const chatState = ensureChatState();
     $("#psychograph_state_target").val(chatState.target);
     $("#psychograph_timeline").val(chatState.timeline);
+    renderSheetHeader();
 
     for (const { key, id } of STATE_AREAS) {
         const slots = chatState.areas[key].slots;
@@ -891,6 +905,7 @@ function bindSettingsEvents() {
 
     $("#psychograph_timeline").on("input", function () {
         ensureChatState().timeline = String($(this).val());
+        renderSheetHeader();
         getContext().saveMetadataDebounced();
     });
 
@@ -920,6 +935,7 @@ function bindSettingsEvents() {
 
     $("#psychograph_state_target").on("change", function () {
         ensureChatState().target = String($(this).val());
+        renderSheetHeader();
         getContext().saveMetadataDebounced();
     });
 
@@ -1248,6 +1264,7 @@ function readTimeline() {
 function writeTimeline(text) {
     ensureChatState().timeline = text;
     $("#psychograph_timeline").val(text);
+    renderSheetHeader();
     getContext().saveMetadataDebounced();
 }
 
@@ -1851,60 +1868,227 @@ async function initAreaFromDescription(areaKey) {
     }
 }
 
-function togglePsychographSubmenu(anchorElement) {
-    const submenu = $("#psychograph_submenu");
+const SHEET_ID = "psychograph_sheet";
+const SHEET_TIMELINE_TAB = "timeline";
 
-    if (submenu.hasClass("shown")) {
-        submenu.removeClass("shown");
+let activeSheetTab = STATE_AREAS[0].key;
+
+// "bodyChanges" -> "Body Changes". Every slot name in AREA_SLOT_CONFIGS reads
+// as its own label this way, so the sheet needs no second list to maintain.
+function humanizeSlot(slot) {
+    return slot.replace(/([A-Z])/g, " $1").replace(/^./, (character) => character.toUpperCase());
+}
+
+function buildSheetTabsHtml() {
+    const tabs = [
+        ...STATE_AREAS.map(({ key }) => ({ key, label: AREA_SLOT_CONFIGS[key].label })),
+        { key: SHEET_TIMELINE_TAB, label: "Timeline" },
+    ];
+    return tabs.map(({ key, label }) => `
+        <div class="psychograph-sheet-tab" data-tab="${key}">${label}</div>
+    `).join("");
+}
+
+function buildSheetAreaPaneHtml(areaKey) {
+    const config = AREA_SLOT_CONFIGS[areaKey];
+    const fields = config.slots.map((slot) => `
+        <label for="psychograph_state_${config.id}_slot_${slot}">${humanizeSlot(slot)}</label>
+        <input id="psychograph_state_${config.id}_slot_${slot}" type="text" class="text_pole" placeholder="${config.slotPlaceholders[slot]}" />
+    `).join("");
+
+    return `
+        <div class="psychograph-sheet-pane" data-tab="${areaKey}">
+            <div class="psychograph-sheet-pane-header">
+                <label class="checkbox_label" for="psychograph_state_${config.id}_enabled">
+                    <input id="psychograph_state_${config.id}_enabled" type="checkbox" />
+                    Enabled
+                </label>
+                <span class="psychograph-sheet-count">${config.slots.length} fields</span>
+                <div class="psychograph-sheet-options-toggle fa-solid fa-gear interactable" data-tab="${areaKey}" title="Options" tabindex="0"></div>
+            </div>
+            <div class="psychograph-sheet-options" data-tab="${areaKey}">
+                <div id="psychograph_sheet_init_${config.id}" class="menu_button">Init from description</div>
+                <small>Fills the slots from the character card instead of from the chat.</small>
+            </div>
+            <div class="psychograph-sheet-fields">${fields}</div>
+        </div>
+    `;
+}
+
+function buildSheetTimelinePaneHtml() {
+    return `
+        <div class="psychograph-sheet-pane" data-tab="${SHEET_TIMELINE_TAB}">
+            <div class="psychograph-sheet-pane-header">
+                <label class="checkbox_label" for="psychograph_timeline_auto_extract">
+                    <input id="psychograph_timeline_auto_extract" type="checkbox" />
+                    Enabled
+                </label>
+                <span id="psychograph_sheet_timeline_count" class="psychograph-sheet-count"></span>
+                <div class="psychograph-sheet-options-toggle fa-solid fa-gear interactable" data-tab="${SHEET_TIMELINE_TAB}" title="Options" tabindex="0"></div>
+            </div>
+            <div class="psychograph-sheet-options" data-tab="${SHEET_TIMELINE_TAB}">
+                <label class="checkbox_label" for="psychograph_timeline_include_hidden">
+                    <input id="psychograph_timeline_include_hidden" type="checkbox" />
+                    Include hidden messages
+                </label>
+                <small>Hiding a message keeps it out of the model's context, not out of the story.</small>
+                <div class="flex-container">
+                    <div id="psychograph_timeline_build" class="menu_button">Build timeline</div>
+                    <div id="psychograph_timeline_clear" class="menu_button">Clear</div>
+                </div>
+                <small id="psychograph_timeline_status"></small>
+            </div>
+            <div class="psychograph-sheet-fields">
+                <label for="psychograph_timeline">Current timeline</label>
+                <textarea id="psychograph_timeline" class="text_pole textarea_compact" rows="12" placeholder="- ..."></textarea>
+            </div>
+        </div>
+    `;
+}
+
+function buildSheetBodyHtml() {
+    return `
+        <div class="psychograph-sheet-title">
+            <span class="psychograph-sheet-heading">Character Sheet</span>
+            <span id="psychograph_sheet_character" class="psychograph-sheet-subject"></span>
+        </div>
+        <div class="psychograph-sheet-tabs">${buildSheetTabsHtml()}</div>
+        <div class="psychograph-sheet-applies">
+            <label for="psychograph_state_target">Applies to</label>
+            <select id="psychograph_state_target" class="text_pole" title="Whether tracked state reflects the character or the user persona. Extraction runs on every message either way.">
+                <option value="char">Character</option>
+                <option value="user">User persona</option>
+            </select>
+        </div>
+        <div class="psychograph-sheet-content">
+            ${STATE_AREAS.map(({ key }) => buildSheetAreaPaneHtml(key)).join("")}
+            ${buildSheetTimelinePaneHtml()}
+        </div>
+        <div class="psychograph-sheet-footer">
+            <span id="psychograph_sheet_status" class="psychograph-sheet-hint"></span>
+            <div id="psychograph_sheet_extract" class="menu_button">Extract now</div>
+        </div>
+    `;
+}
+
+// Same construction SillyTavern uses for its own floating panels (see the
+// Summarize extension): the zoomed-avatar template carries the control bar and
+// the classes dragElement expects, and the grabber's id has to be the panel's
+// id with "header" appended or dragElement won't find it.
+function buildSheetPanel() {
+    if ($(`#${SHEET_ID}`).length > 0) {
         return;
     }
 
-    // position: absolute + getBoundingClientRect() + window.scrollX/Y, and
-    // toggled via our own "shown" class rather than the `hidden` attribute —
-    // this mirrors the GuidedGenerations extension's menu (confirmed working
-    // in the same SillyTavern instance), because relying on `hidden` turned
-    // out to be the actual bug: our container used SillyTavern's own
-    // `.list-group` class, which SillyTavern's core CSS apparently styles
-    // with a `display` that outranks the browser's default `[hidden]` rule
-    // (both are author-level rules of equal specificity, so `[hidden]`
-    // doesn't automatically win) — the submenu was never truly display:none,
-    // just sitting whereever it was last positioned (or its unset default).
-    const rect = anchorElement.getBoundingClientRect();
-    submenu.css({
-        top: `${rect.top + window.scrollY - 5}px`,
-        left: `${rect.left + window.scrollX}px`,
+    const movingDivs = document.getElementById("movingDivs");
+    if (!movingDivs) {
+        console.warn("[Psychograph] #movingDivs not found, skipping the character sheet panel.");
+        return;
+    }
+
+    const template = $("#zoomed_avatar_template").html();
+    const panel = template ? $(template) : $("<div></div>");
+    panel
+        .attr("id", SHEET_ID)
+        .removeClass("zoomed_avatar")
+        .addClass("draggable psychograph-sheet")
+        .empty()
+        .append(`
+            <div class="panelControlBar flex-container">
+                <div id="${SHEET_ID}header" class="fa-solid fa-grip drag-grabber hoverglow"></div>
+                <div id="psychograph_sheet_close" class="fa-solid fa-circle-xmark hoverglow dragClose"></div>
+            </div>
+            <div class="psychograph-sheet-body">${buildSheetBodyHtml()}</div>
+        `);
+
+    $(movingDivs).append(panel);
+    loadMovingUIState();
+    dragElement(panel);
+    selectSheetTab(activeSheetTab);
+}
+
+function toggleSheetPanel() {
+    const panel = $(`#${SHEET_ID}`);
+    if (panel.length === 0) {
+        return;
+    }
+    if (panel.hasClass("shown")) {
+        panel.removeClass("shown");
+        return;
+    }
+    renderChatState();
+    panel.addClass("shown");
+}
+
+function selectSheetTab(tab) {
+    activeSheetTab = tab;
+    $(`#${SHEET_ID} .psychograph-sheet-tab`).each(function () {
+        $(this).toggleClass("active", String($(this).data("tab")) === tab);
     });
-    submenu.addClass("shown");
+    $(`#${SHEET_ID} .psychograph-sheet-pane`).each(function () {
+        $(this).toggleClass("active", String($(this).data("tab")) === tab);
+    });
 }
 
-function buildAreaSubmenuHtml() {
-    return STATE_AREAS.map(({ key }) => {
-        const config = AREA_SLOT_CONFIGS[key];
-        return `
-            <div class="psychograph-menu-divider">${config.label}</div>
-            <div id="psychograph_action_init_${config.id}" class="list-group-item">
-                <div class="fa-solid fa-bolt extensionsMenuExtensionButton"></div>
-                <span>Init ${config.label}</span>
-            </div>
-            <div id="psychograph_action_${config.id}" class="list-group-item">
-                <div class="fa-solid ${config.icon} extensionsMenuExtensionButton"></div>
-                <span>${config.label}</span>
-            </div>
-        `;
-    }).join("");
+function renderSheetHeader() {
+    $("#psychograph_sheet_character").text(readTargetName());
+    const entries = readTimeline().split("\n").filter((line) => line.trim()).length;
+    $("#psychograph_sheet_timeline_count").text(`${entries} ${entries === 1 ? "entry" : "entries"}`);
 }
 
-function bindAreaSubmenuEvents() {
+async function extractActiveSheetTabNow() {
+    if (activeSheetTab === SHEET_TIMELINE_TAB) {
+        await rerunTimelineExtractionNow();
+        return;
+    }
+    await rerunAreaExtractionNow(activeSheetTab);
+}
+
+async function rerunTimelineExtractionNow() {
+    const settings = ensureSettings();
+    if (!settings.connectionProfile) {
+        toastr.warning(NO_PROFILE_WARNING, "Psychograph");
+        return;
+    }
+
+    const message = getContext().chat.at(-1);
+    if (!isTimelineMessage(message, settings.timeline.includeHidden)) {
+        toastr.warning("The last message is a system or hidden message, nothing to analyze.", "Psychograph");
+        return;
+    }
+
+    toastr.info("Checking the last message for a timeline entry…", "Psychograph");
+    const outcome = await queueTimelineWork(() => extractTimelineEntry(settings.connectionProfile, message));
+    markTimelineExtracted(message);
+
+    if (outcome === TIMELINE_ADDED) {
+        toastr.success("Entry added to the timeline.", "Psychograph");
+    } else if (outcome === TIMELINE_DISCARDED) {
+        toastr.info("Entry discarded as too minor.", "Psychograph");
+    } else {
+        toastr.info("Nothing worth logging in that message.", "Psychograph");
+    }
+}
+
+function bindSheetEvents() {
+    const panel = $(`#${SHEET_ID}`);
+
+    $("#psychograph_sheet_close").on("click", function () {
+        panel.removeClass("shown");
+    });
+
+    panel.on("click", ".psychograph-sheet-tab", function () {
+        selectSheetTab(String($(this).data("tab")));
+    });
+
+    panel.on("click", ".psychograph-sheet-options-toggle", function () {
+        $(`.psychograph-sheet-options[data-tab="${$(this).data("tab")}"]`).toggleClass("shown");
+    });
+
+    $("#psychograph_sheet_extract").on("click", extractActiveSheetTabNow);
+
     for (const { key } of STATE_AREAS) {
-        const config = AREA_SLOT_CONFIGS[key];
-
-        $(`#psychograph_action_${config.id}`).on("click", async function () {
-            $("#psychograph_submenu").removeClass("shown");
-            await rerunAreaExtractionNow(key);
-        });
-
-        $(`#psychograph_action_init_${config.id}`).on("click", async function () {
-            $("#psychograph_submenu").removeClass("shown");
+        $(`#psychograph_sheet_init_${AREA_SLOT_CONFIGS[key].id}`).on("click", async function () {
             await initAreaFromDescription(key);
         });
     }
@@ -1934,7 +2118,7 @@ function buildToolbarButton() {
     }
 
     $(buttonContainer).append(`
-        <div id="psychograph_menu_button" class="psychograph-toolbar-button fa-solid fa-brain interactable" title="Psychograph" tabindex="0"></div>
+        <div id="psychograph_menu_button" class="psychograph-toolbar-button fa-solid fa-brain interactable" title="Character sheet" tabindex="0"></div>
         <div class="psychograph-guided-buttons">
             <div id="psychograph_guided_swipe_button" class="psychograph-toolbar-button fa-solid fa-forward interactable" title="Guided Swipe" tabindex="0"></div>
             <div id="psychograph_guided_message_button" class="psychograph-toolbar-button fa-solid fa-comment-dots interactable" title="Guided Message" tabindex="0"></div>
@@ -1945,34 +2129,16 @@ function buildToolbarButton() {
     $("#psychograph_guided_message_button").on("click", guidedMessage);
     $("#psychograph_guided_swipe_button").on("click", guidedSwipe);
     $("#psychograph_guided_continue_button").on("click", guidedContinue);
-
-    $("body").append(`
-        <div id="psychograph_submenu" class="psychograph-tools-menu">
-            ${buildAreaSubmenuHtml()}
-        </div>
-    `);
-
-    $("#psychograph_menu_button").on("click", function (event) {
-        event.stopPropagation();
-        togglePsychographSubmenu(this);
-    });
-
-    $("#psychograph_submenu").on("click", function (event) {
-        event.stopPropagation();
-    });
-
-    $(document).on("click", function () {
-        $("#psychograph_submenu").removeClass("shown");
-    });
-
-    bindAreaSubmenuEvents();
+    $("#psychograph_menu_button").on("click", toggleSheetPanel);
 }
 
 jQuery(async () => {
     const settingsHtml = await $.get(`${extensionFolderPath}/settings.html`);
     $("#extensions_settings2").append(settingsHtml);
 
+    buildSheetPanel();
     bindSettingsEvents();
+    bindSheetEvents();
     bindChatEvents();
     buildToolbarButton();
     renderSettings();
