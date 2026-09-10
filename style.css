@@ -253,3 +253,83 @@
     padding: 4px 8px;
     margin: 0;
 }
+
+/* Trigger map. SillyTavern has no table styling of its own (its one table
+   class is unused and breaks words mid-word), so the sheet brings its own. */
+.psychograph-trigger-table {
+    display: none;
+    width: 100%;
+    border-collapse: collapse;
+    table-layout: fixed;
+}
+
+.psychograph-trigger-table.shown {
+    display: table;
+}
+
+.psychograph-trigger-table th {
+    padding: 2px 4px;
+    font-size: 0.75em;
+    font-weight: normal;
+    text-align: left;
+    text-transform: uppercase;
+    opacity: 0.6;
+    border-bottom: 1px solid var(--SmartThemeBorderColor, var(--SmartThemeBodyColor));
+}
+
+.psychograph-trigger-table th:nth-child(1) {
+    width: 24%;
+}
+
+.psychograph-trigger-table th:nth-child(2) {
+    width: 32%;
+}
+
+.psychograph-trigger-table th:nth-child(4) {
+    width: 1.6em;
+}
+
+.psychograph-trigger-table td {
+    padding: 1px;
+    vertical-align: top;
+}
+
+.psychograph-trigger-input {
+    width: 100%;
+    box-sizing: border-box;
+    padding: 3px 4px;
+    font-size: 0.85em;
+    color: inherit;
+    background-color: transparent;
+    border: 1px solid transparent;
+    border-radius: 3px;
+    outline: none;
+}
+
+.psychograph-trigger-input:hover {
+    border-color: var(--SmartThemeBorderColor, var(--SmartThemeBodyColor));
+}
+
+.psychograph-trigger-input:focus {
+    border-color: var(--SmartThemeQuoteColor, var(--SmartThemeBodyColor));
+    background-color: var(--black30a, rgba(0, 0, 0, 0.3));
+}
+
+.psychograph-trigger-delete {
+    padding: 3px;
+    cursor: pointer;
+    opacity: 0.4;
+}
+
+.psychograph-trigger-delete:hover {
+    opacity: 1;
+}
+
+#psychograph_trigger_empty {
+    display: none;
+    padding: 6px 2px;
+}
+
+#psychograph_trigger_empty.shown {
+    display: block;
+}

@@ -28,6 +28,8 @@ const AREA_SLOT_UPDATE_MAX_TOKENS = 200;
 const AREA_GATE_MAX_TOKENS = 200;
 const TIMELINE_ENTRY_MAX_TOKENS = 300;
 const TIMELINE_KEEP_MAX_TOKENS = 200;
+const TRIGGER_MAP_MAX_TOKENS = 500;
+const TRIGGER_COMPACTION_MAX_TOKENS = 800;
 
 // Values a model reaches for when a slot holds nothing. Outside Clothes these
 // are an absence and must not reach the prompt; inside Clothes "none" is itself
@@ -576,6 +578,106 @@ function buildTimelineKeepSchema() {
     };
 }
 
+const TRIGGER_MAP_EMPTY_PLACEHOLDER = "Nothing known yet.";
+
+// Under evaluation against the user's own model — see CLAUDE.md before
+// touching any of this wording.
+function buildTriggerMapPrompt(currentMap, speaker, message) {
+    const context = getContext();
+
+    return buildPromptDocument([
+        {
+            heading: "# Task Description",
+            content: `Your job is to check a recent excerpt of the roleplay between ${context.name1} and ${context.name2} for standing trigger-response patterns worth adding to a character's trigger map, and to write them if any exist. You are NOT continuing the roleplay, judging the content, or writing dialogue.`,
+        },
+        {
+            heading: "## The test",
+            content: `Imagine you're writing a character bible for a show's writers' room — the reference sheet that lists "whenever X happens, this character reliably does Y," so future episodes stay consistent. Would this excerpt earn an entry on that sheet?
+
+That means the excerpt must show (or state) a condition-response pair that would recur — not a one-off reaction to a unique situation. A single moment of sadness is not a trigger pattern. "Whenever she smells smoke, she goes quiet and won't answer" is.
+
+The excerpt may contain zero, one, or several such patterns — check for all of them, across all characters present.
+
+If the excerpt only shows a character reacting to something without implying the same reaction would happen again under the same condition, there is nothing to log for that character.`,
+        },
+        {
+            heading: "## Already known for these characters (do not duplicate)",
+            content: `${currentMap}
+
+Skip any pattern that reinforces or adds detail to an existing entry above (same trigger, same character) — that pattern is already captured. Only include a pattern if the trigger, the response, or the character is genuinely new.`,
+        },
+        {
+            heading: "## Writing an entry",
+            content: bulletList([
+                "Resolve pronouns and nicknames to actual character names.",
+                `"trigger" is the condition, as concrete and specific as the excerpt actually supports (e.g. "sees the color red", not "gets upset").`,
+                `"response" is what reliably happens — involuntary reactions, behavior changes, emotional shifts. Neutral, present tense, no editorializing about how significant it is.`,
+                `If the excerpt states *why* the pattern exists (a trauma, an implanted memory, a past event), include it briefly in "response" only if stated — don't infer a cause that isn't in the text.`,
+                "Reasoning is just for debug — one concise sentence is enough, covering all findings.",
+            ]),
+        },
+        {
+            heading: "## Output format",
+            content: `Respond with ONLY a JSON object (no markdown code fence), using exactly this shape:
+{"reasoning": "...", "entries": [{"character": "...", "trigger": "...", "response": "..."}]}
+
+If nothing qualifies, use an empty array: {"reasoning": "...", "entries": []}`,
+        },
+    ], speaker, message);
+}
+
+// PROVISIONAL WORDING. Compaction is the one call that rewrites entries that
+// already exist, so this text is a placeholder for one the user has tested
+// against their own model — see CLAUDE.md.
+function buildTriggerCompactionPrompt(currentMap) {
+    return buildPromptDocument([
+        {
+            heading: "# Task Description",
+            content: "You will see a trigger map — the reference sheet of standing \"whenever X happens, this character reliably does Y\" patterns for the characters in a roleplay. Your job is to consolidate it, not to extend it.",
+        },
+        {
+            heading: "## The test",
+            content: bulletList([
+                "Two entries belong together when they describe the same underlying pattern in different words, or when one is a narrower example of the other. Merge those into one entry whose trigger covers both and whose response states what reliably happens.",
+                "Keep entries separate when the trigger or the response differs in a way that would change how the character behaves.",
+                "Entries for different characters are never merged.",
+                "Never invent a pattern that is not in the map below, and never drop one without merging it into another.",
+                "Reasoning is just for debug — one concise sentence is enough.",
+            ]),
+        },
+        {
+            heading: "## Output format",
+            content: `Respond with ONLY a JSON object (no markdown code fence), containing the full consolidated map, using exactly this shape:
+{"reasoning": "...", "entries": [{"character": "...", "trigger": "...", "response": "..."}]}`,
+        },
+    ], "", currentMap);
+}
+
+function buildTriggerEntriesSchema(reasoningDescription) {
+    return {
+        type: "object",
+        properties: {
+            reasoning: { type: "string", description: reasoningDescription },
+            entries: {
+                type: "array",
+                description: "One object per pattern. An empty array when there is nothing to record.",
+                items: {
+                    type: "object",
+                    properties: {
+                        character: { type: "string", description: "The character the pattern belongs to, by name." },
+                        trigger: { type: "string", description: "The condition that sets the pattern off." },
+                        response: { type: "string", description: "What reliably happens when it does." },
+                    },
+                    required: ["character", "trigger", "response"],
+                    additionalProperties: false,
+                },
+            },
+        },
+        required: ["reasoning", "entries"],
+        additionalProperties: false,
+    };
+}
+
 const defaultSettings = {
     enabled: true,
     connectionProfile: "",
@@ -587,6 +689,11 @@ const defaultSettings = {
     },
     state: {
         areas: Object.fromEntries(STATE_AREAS.map(({ key }) => [key, { enabled: true }])),
+    },
+    triggers: {
+        autoExtract: true,
+        includeHidden: true,
+        compactionInterval: 10,
     },
     timeline: {
         autoExtract: true,
@@ -656,7 +763,7 @@ function markStateExtracted(message) {
 // "Restore previous" undoes is everything the last run changed, which is how
 // it reads on the sheet. Restoring swaps rather than drops the snapshot, so a
 // restore can be taken back too.
-const UNDO_KEYS = ["areas", "timeline"];
+const UNDO_KEYS = ["areas", "timeline", "triggerMap"];
 
 function captureUndoSnapshot(label) {
     const chatState = ensureChatState();
@@ -713,6 +820,7 @@ function ensureSettings() {
     const settings = extension_settings[extensionName];
     settings.cognee = Object.assign(structuredClone(defaultSettings.cognee), settings.cognee);
     settings.timeline = Object.assign(structuredClone(defaultSettings.timeline), settings.timeline);
+    settings.triggers = Object.assign(structuredClone(defaultSettings.triggers), settings.triggers);
     settings.state = settings.state || {};
     settings.state.areas = settings.state.areas || {};
     for (const { key } of STATE_AREAS) {
@@ -761,6 +869,9 @@ function ensureChatState() {
     if (chatState.timeline === undefined) {
         chatState.timeline = "";
     }
+    chatState.triggerMap = chatState.triggerMap || {};
+    chatState.triggerMap.entries = chatState.triggerMap.entries || [];
+    chatState.triggerMap.sinceCompaction = chatState.triggerMap.sinceCompaction || 0;
 
     return chatState;
 }
@@ -864,6 +975,9 @@ function renderSettings() {
     $("#psychograph_timeline_include_hidden").prop("checked", settings.timeline.includeHidden);
     $("#psychograph_timeline_inject_enabled").prop("checked", settings.timeline.injectEnabled);
     $("#psychograph_timeline_inject_limit").val(settings.timeline.injectLimit);
+    $("#psychograph_triggers_auto_extract").prop("checked", settings.triggers.autoExtract);
+    $("#psychograph_triggers_include_hidden").prop("checked", settings.triggers.includeHidden);
+    $("#psychograph_triggers_compaction_interval").val(settings.triggers.compactionInterval);
     renderCogneeChatSection();
 
     for (const { key, id } of STATE_AREAS) {
@@ -971,6 +1085,21 @@ function bindSettingsEvents() {
 
     $("#psychograph_timeline_inject_limit").on("input", function () {
         ensureSettings().timeline.injectLimit = Math.max(0, Number($(this).val()) || 0);
+        saveSettingsDebounced();
+    });
+
+    $("#psychograph_triggers_auto_extract").on("change", function () {
+        ensureSettings().triggers.autoExtract = $(this).prop("checked");
+        saveSettingsDebounced();
+    });
+
+    $("#psychograph_triggers_include_hidden").on("change", function () {
+        ensureSettings().triggers.includeHidden = $(this).prop("checked");
+        saveSettingsDebounced();
+    });
+
+    $("#psychograph_triggers_compaction_interval").on("input", function () {
+        ensureSettings().triggers.compactionInterval = Math.max(0, Number($(this).val()) || 0);
         saveSettingsDebounced();
     });
 
@@ -1458,6 +1587,212 @@ async function extractTimelineForNewMessage(settings, profileId) {
     await refreshTimelineInject();
 }
 
+const TRIGGER_EXTRACTED_KEY = "psychographTriggersExtracted";
+
+function isTriggersExtracted(message) {
+    return Boolean(message?.extra?.[TRIGGER_EXTRACTED_KEY]);
+}
+
+function markTriggersExtracted(message) {
+    message.extra = message.extra || {};
+    message.extra[TRIGGER_EXTRACTED_KEY] = true;
+    getContext().saveMetadataDebounced();
+}
+
+function readTriggerEntries() {
+    return ensureChatState().triggerMap.entries;
+}
+
+function writeTriggerEntries(entries) {
+    ensureChatState().triggerMap.entries = entries;
+    renderTriggerMap();
+    getContext().saveMetadataDebounced();
+}
+
+function normalizeTriggerField(value) {
+    return String(value ?? "").replace(/\s+/g, " ").trim();
+}
+
+// Grouped by character rather than listed flat: the prompt asks what is already
+// known "for these characters", and that is easier to check per character.
+function renderTriggerMapForPrompt() {
+    const grouped = new Map();
+    for (const entry of readTriggerEntries()) {
+        const character = entry.character || "Unknown";
+        if (!grouped.has(character)) {
+            grouped.set(character, []);
+        }
+        grouped.get(character).push(entry);
+    }
+
+    if (grouped.size === 0) {
+        return TRIGGER_MAP_EMPTY_PLACEHOLDER;
+    }
+
+    return [...grouped.entries()]
+        .map(([character, entries]) => `${character}\n${entries.map((entry) => `- ${entry.trigger} -> ${entry.response}`).join("\n")}`)
+        .join("\n\n");
+}
+
+// Same reasoning as the timeline queue: two runs appending to one map would
+// each be told the other's entry does not exist yet.
+let triggerWork = Promise.resolve();
+
+function queueTriggerWork(task) {
+    triggerWork = triggerWork.catch(() => {}).then(task);
+    return triggerWork;
+}
+
+async function extractTriggersForMessage(profileId, message) {
+    const chatState = ensureChatState();
+
+    try {
+        const prompt = buildTriggerMapPrompt(renderTriggerMapForPrompt(), readMessageSpeaker(message), message.mes);
+        const schema = buildTriggerEntriesSchema("One concise sentence covering all findings, before answering.");
+        const result = await sendJsonSchemaRequest(profileId, "trigger_map", schema, prompt, TRIGGER_MAP_MAX_TOKENS);
+        console.log("[Psychograph] Trigger map reasoning:", result.reasoning);
+
+        const found = (Array.isArray(result.entries) ? result.entries : [])
+            .map((entry) => ({
+                character: normalizeTriggerField(entry.character),
+                trigger: normalizeTriggerField(entry.trigger),
+                response: normalizeTriggerField(entry.response),
+            }))
+            .filter((entry) => entry.character && entry.trigger && entry.response);
+        if (found.length === 0) {
+            return 0;
+        }
+        if (!isCurrentChatState(chatState)) {
+            console.warn("[Psychograph] Chat changed during the trigger call, discarding the entries.");
+            return 0;
+        }
+
+        writeTriggerEntries([...readTriggerEntries(), ...found]);
+        return found.length;
+    } catch (error) {
+        console.error("[Psychograph] Trigger map call failed:", error);
+        return 0;
+    }
+}
+
+async function compactTriggerMap(profileId) {
+    const chatState = ensureChatState();
+    const before = readTriggerEntries();
+    if (before.length < 2) {
+        return false;
+    }
+
+    try {
+        const schema = buildTriggerEntriesSchema("One concise sentence on what was merged, before answering.");
+        const result = await sendJsonSchemaRequest(
+            profileId,
+            "trigger_compaction",
+            schema,
+            buildTriggerCompactionPrompt(renderTriggerMapForPrompt()),
+            TRIGGER_COMPACTION_MAX_TOKENS,
+        );
+        console.log("[Psychograph] Trigger compaction reasoning:", result.reasoning);
+
+        const compacted = (Array.isArray(result.entries) ? result.entries : [])
+            .map((entry) => ({
+                character: normalizeTriggerField(entry.character),
+                trigger: normalizeTriggerField(entry.trigger),
+                response: normalizeTriggerField(entry.response),
+            }))
+            .filter((entry) => entry.character && entry.trigger && entry.response);
+        // A compaction that returns nothing usable would wipe the map, and this
+        // is the one call that rewrites entries rather than adding to them.
+        if (compacted.length === 0) {
+            console.warn("[Psychograph] Trigger compaction returned no usable entries, keeping the map as it was.");
+            return false;
+        }
+        if (!isCurrentChatState(chatState)) {
+            return false;
+        }
+
+        captureUndoSnapshot("compacting the trigger map");
+        writeTriggerEntries(compacted);
+        console.log(`[Psychograph] Trigger map compacted from ${before.length} to ${compacted.length} entries.`);
+        return true;
+    } catch (error) {
+        console.error("[Psychograph] Trigger compaction failed:", error);
+        return false;
+    }
+}
+
+async function extractTriggersForNewMessage(settings, profileId) {
+    if (!settings.triggers.autoExtract) {
+        return;
+    }
+
+    const message = getContext().chat.at(-2);
+    if (!isTimelineMessage(message, settings.triggers.includeHidden) || isTriggersExtracted(message)) {
+        return;
+    }
+    markTriggersExtracted(message);
+
+    await queueTriggerWork(async () => {
+        await extractTriggersForMessage(profileId, message);
+
+        const chatState = ensureChatState();
+        const interval = Number(settings.triggers.compactionInterval) || 0;
+        chatState.triggerMap.sinceCompaction += 1;
+        if (interval > 0 && chatState.triggerMap.sinceCompaction >= interval) {
+            chatState.triggerMap.sinceCompaction = 0;
+            await compactTriggerMap(profileId);
+        }
+        getContext().saveMetadataDebounced();
+    });
+}
+
+async function rerunTriggerExtractionNow() {
+    const settings = ensureSettings();
+    if (!settings.connectionProfile) {
+        toastr.warning(NO_PROFILE_WARNING, "Psychograph");
+        return;
+    }
+
+    const message = getContext().chat.at(-1);
+    if (!isTimelineMessage(message, settings.triggers.includeHidden)) {
+        toastr.warning("The last message is a system or hidden message, nothing to analyze.", "Psychograph");
+        return;
+    }
+
+    toastr.info("Checking the last message for trigger patterns…", "Psychograph");
+    captureUndoSnapshot("the trigger extraction");
+    const added = await queueTriggerWork(() => extractTriggersForMessage(settings.connectionProfile, message));
+    markTriggersExtracted(message);
+    noteLastExtraction(message, "triggers");
+
+    if (added > 0) {
+        toastr.success(`${added} new ${added === 1 ? "pattern" : "patterns"} on the trigger map.`, "Psychograph");
+    } else {
+        toastr.info("No standing pattern in that message.", "Psychograph");
+    }
+}
+
+async function compactTriggerMapNow() {
+    const settings = ensureSettings();
+    if (!settings.connectionProfile) {
+        toastr.warning(NO_PROFILE_WARNING, "Psychograph");
+        return;
+    }
+    if (readTriggerEntries().length < 2) {
+        toastr.info("Not enough entries to compact.", "Psychograph");
+        return;
+    }
+
+    toastr.info("Compacting the trigger map…", "Psychograph");
+    const before = readTriggerEntries().length;
+    const compacted = await queueTriggerWork(() => compactTriggerMap(settings.connectionProfile));
+
+    if (compacted) {
+        toastr.success(`Trigger map: ${before} entries in, ${readTriggerEntries().length} out.`, "Psychograph");
+    } else {
+        toastr.info("Nothing merged, the map is unchanged.", "Psychograph");
+    }
+}
+
 let timelineBuildRunning = false;
 let timelineBuildCancelled = false;
 
@@ -1767,6 +2102,7 @@ function handleChatMessageEvent() {
         await Promise.all([
             extractStateForNewMessage(settings, profileId),
             extractTimelineForNewMessage(settings, profileId),
+            extractTriggersForNewMessage(settings, profileId),
         ]);
     };
 }
@@ -1980,6 +2316,7 @@ async function initAreaFromDescription(areaKey) {
 
 const SHEET_ID = "psychograph_sheet";
 const SHEET_TIMELINE_TAB = "timeline";
+const SHEET_TRIGGERS_TAB = "triggers";
 
 let activeSheetTab = STATE_AREAS[0].key;
 
@@ -1993,6 +2330,7 @@ function buildSheetTabsHtml() {
     const tabs = [
         ...STATE_AREAS.map(({ key }) => ({ key, label: AREA_SLOT_CONFIGS[key].label })),
         { key: SHEET_TIMELINE_TAB, label: "Timeline" },
+        { key: SHEET_TRIGGERS_TAB, label: "Triggers" },
     ];
     return tabs.map(({ key, label }) => `
         <div class="psychograph-sheet-tab" data-tab="${key}">${label}</div>
@@ -2064,6 +2402,41 @@ function buildSheetTimelinePaneHtml() {
     `;
 }
 
+function buildSheetTriggersPaneHtml() {
+    return `
+        <div class="psychograph-sheet-pane" data-tab="${SHEET_TRIGGERS_TAB}">
+            <div class="psychograph-sheet-pane-header">
+                <label class="checkbox_label" for="psychograph_triggers_auto_extract">
+                    <input id="psychograph_triggers_auto_extract" type="checkbox" />
+                    Enabled
+                </label>
+                <span id="psychograph_sheet_triggers_count" class="psychograph-sheet-count"></span>
+                <div class="psychograph-sheet-options-toggle fa-solid fa-gear interactable" data-tab="${SHEET_TRIGGERS_TAB}" title="Options" tabindex="0"></div>
+            </div>
+            <div class="psychograph-sheet-options" data-tab="${SHEET_TRIGGERS_TAB}">
+                <label class="checkbox_label" for="psychograph_triggers_include_hidden">
+                    <input id="psychograph_triggers_include_hidden" type="checkbox" />
+                    Include hidden messages
+                </label>
+                <label for="psychograph_triggers_compaction_interval">Compact every N messages (0 = never)</label>
+                <input id="psychograph_triggers_compaction_interval" type="number" min="0" step="1" class="text_pole" />
+                <div class="flex-container">
+                    <div id="psychograph_triggers_compact" class="menu_button">Compact now</div>
+                    <div id="psychograph_triggers_add" class="menu_button">Add entry</div>
+                </div>
+                <small>Compaction merges entries that describe the same pattern. It is the only call that rewrites what is already on the map, so it snapshots first.</small>
+            </div>
+            <table class="psychograph-trigger-table">
+                <thead>
+                    <tr><th>Character</th><th>Trigger</th><th>Response</th><th></th></tr>
+                </thead>
+                <tbody id="psychograph_trigger_rows"></tbody>
+            </table>
+            <div id="psychograph_trigger_empty" class="psychograph-sheet-hint">Nothing on the map yet.</div>
+        </div>
+    `;
+}
+
 function buildSheetBodyHtml() {
     return `
         <div class="psychograph-sheet-title">
@@ -2081,6 +2454,7 @@ function buildSheetBodyHtml() {
         <div class="psychograph-sheet-content">
             ${STATE_AREAS.map(({ key }) => buildSheetAreaPaneHtml(key)).join("")}
             ${buildSheetTimelinePaneHtml()}
+            ${buildSheetTriggersPaneHtml()}
         </div>
         <div class="psychograph-sheet-footer">
             <span id="psychograph_sheet_status" class="psychograph-sheet-hint"></span>
@@ -2155,7 +2529,29 @@ function renderSheetHeader() {
     $("#psychograph_sheet_character").text(readTargetName());
     const entries = readTimeline().split("\n").filter((line) => line.trim()).length;
     $("#psychograph_sheet_timeline_count").text(`${entries} ${entries === 1 ? "entry" : "entries"}`);
+    renderTriggerMap();
     renderSheetFooter();
+}
+
+function escapeHtmlAttribute(value) {
+    return String(value ?? "").replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+function renderTriggerMap() {
+    const entries = readTriggerEntries();
+    const rows = entries.map((entry, index) => `
+        <tr data-index="${index}">
+            ${["character", "trigger", "response"].map((field) => `
+                <td><input type="text" class="psychograph-trigger-input" data-field="${field}" value="${escapeHtmlAttribute(entry[field])}" /></td>
+            `).join("")}
+            <td><div class="psychograph-trigger-delete fa-solid fa-xmark interactable" title="Delete entry" tabindex="0"></div></td>
+        </tr>
+    `).join("");
+
+    $("#psychograph_trigger_rows").html(rows);
+    $("#psychograph_trigger_empty").toggleClass("shown", entries.length === 0);
+    $(".psychograph-trigger-table").toggleClass("shown", entries.length > 0);
+    $("#psychograph_sheet_triggers_count").text(`${entries.length} ${entries.length === 1 ? "entry" : "entries"}`);
 }
 
 function renderSheetFooter() {
@@ -2170,6 +2566,10 @@ function renderSheetFooter() {
 async function extractActiveSheetTabNow() {
     if (activeSheetTab === SHEET_TIMELINE_TAB) {
         await rerunTimelineExtractionNow();
+        return;
+    }
+    if (activeSheetTab === SHEET_TRIGGERS_TAB) {
+        await rerunTriggerExtractionNow();
         return;
     }
     await rerunAreaExtractionNow(activeSheetTab);
@@ -2219,6 +2619,28 @@ function bindSheetEvents() {
 
     $("#psychograph_sheet_extract").on("click", extractActiveSheetTabNow);
     $("#psychograph_sheet_restore").on("click", restorePreviousState);
+    $("#psychograph_triggers_compact").on("click", compactTriggerMapNow);
+
+    $("#psychograph_triggers_add").on("click", function () {
+        writeTriggerEntries([...readTriggerEntries(), { character: readTargetName(), trigger: "", response: "" }]);
+    });
+
+    // Delegated, so a re-render doesn't have to rebind every row.
+    panel.on("input", ".psychograph-trigger-input", function () {
+        const index = Number($(this).closest("tr").data("index"));
+        const entries = readTriggerEntries();
+        if (!entries[index]) {
+            return;
+        }
+        entries[index][String($(this).data("field"))] = String($(this).val());
+        getContext().saveMetadataDebounced();
+    });
+
+    panel.on("click", ".psychograph-trigger-delete", function () {
+        const index = Number($(this).closest("tr").data("index"));
+        captureUndoSnapshot("deleting a trigger entry");
+        writeTriggerEntries(readTriggerEntries().filter((_, position) => position !== index));
+    });
 
     for (const { key } of STATE_AREAS) {
         $(`#psychograph_sheet_init_${AREA_SLOT_CONFIGS[key].id}`).on("click", async function () {
