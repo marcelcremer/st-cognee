@@ -131,6 +131,12 @@
                     <textarea id="psychograph_timeline" class="text_pole textarea_compact" rows="10" placeholder="- ..."></textarea>
                     <small>One bullet per entry, stored with this chat. Editable by hand &mdash; what stands here is what the next build call is told is already on the timeline.</small>
 
+                    <label class="checkbox_label" for="psychograph_timeline_auto_extract">
+                        <input id="psychograph_timeline_auto_extract" type="checkbox" />
+                        Extract on every message
+                    </label>
+                    <small>Runs alongside the state extraction, on the message before the newest one &mdash; the newest is still swipeable, and an entry written from a swipe that gets replaced cannot be taken back out.</small>
+
                     <label class="checkbox_label" for="psychograph_timeline_include_hidden">
                         <input id="psychograph_timeline_include_hidden" type="checkbox" />
                         Include hidden messages

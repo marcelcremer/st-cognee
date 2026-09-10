@@ -576,6 +576,7 @@ const defaultSettings = {
         areas: Object.fromEntries(STATE_AREAS.map(({ key }) => [key, { enabled: true }])),
     },
     timeline: {
+        autoExtract: true,
         includeHidden: true,
     },
 };
@@ -633,6 +634,18 @@ function isStateExtracted(message) {
 function markStateExtracted(message) {
     message.extra = message.extra || {};
     message.extra[STATE_EXTRACTED_KEY] = true;
+    getContext().saveMetadataDebounced();
+}
+
+const TIMELINE_EXTRACTED_KEY = "psychographTimelineExtracted";
+
+function isTimelineExtracted(message) {
+    return Boolean(message?.extra?.[TIMELINE_EXTRACTED_KEY]);
+}
+
+function markTimelineExtracted(message) {
+    message.extra = message.extra || {};
+    message.extra[TIMELINE_EXTRACTED_KEY] = true;
     getContext().saveMetadataDebounced();
 }
 
@@ -791,6 +804,7 @@ function renderSettings() {
     $("#psychograph_cognee_api_key").val(settings.cognee.apiKey);
     $("#psychograph_cognee_enabled").prop("checked", settings.cognee.enabled);
     $("#psychograph_cognee_recall_enabled").prop("checked", settings.cognee.recallEnabled);
+    $("#psychograph_timeline_auto_extract").prop("checked", settings.timeline.autoExtract);
     $("#psychograph_timeline_include_hidden").prop("checked", settings.timeline.includeHidden);
     renderCogneeChatSection();
 
@@ -878,6 +892,11 @@ function bindSettingsEvents() {
     $("#psychograph_timeline").on("input", function () {
         ensureChatState().timeline = String($(this).val());
         getContext().saveMetadataDebounced();
+    });
+
+    $("#psychograph_timeline_auto_extract").on("change", function () {
+        ensureSettings().timeline.autoExtract = $(this).prop("checked");
+        saveSettingsDebounced();
     });
 
     $("#psychograph_timeline_include_hidden").on("change", function () {
@@ -1262,6 +1281,64 @@ async function shouldKeepTimelineEntry(profileId, entry) {
     }
 }
 
+// Both callers append to the same text blob and read it back as the prompt's
+// "already on the timeline", so they take turns rather than interleave.
+let timelineWork = Promise.resolve();
+
+function queueTimelineWork(task) {
+    timelineWork = timelineWork.catch(() => {}).then(task);
+    return timelineWork;
+}
+
+const TIMELINE_ADDED = "added";
+const TIMELINE_DISCARDED = "discarded";
+const TIMELINE_SKIPPED = "skipped";
+
+async function extractTimelineEntry(profileId, message) {
+    const chatState = ensureChatState();
+
+    try {
+        const prompt = buildTimelinePrompt(readTimeline(), readMessageSpeaker(message), message.mes);
+        const result = await sendJsonSchemaRequest(profileId, "timeline_entry", buildTimelineSchema(), prompt, TIMELINE_ENTRY_MAX_TOKENS);
+        console.log("[Psychograph] Timeline reasoning:", result.reasoning);
+
+        const entry = normalizeTimelineEntry(result.entry);
+        if (result.significant !== true || !entry) {
+            return TIMELINE_SKIPPED;
+        }
+        if (!await shouldKeepTimelineEntry(profileId, entry)) {
+            return TIMELINE_DISCARDED;
+        }
+        if (!isCurrentChatState(chatState)) {
+            console.warn("[Psychograph] Chat changed during the timeline call, discarding the entry.");
+            return TIMELINE_SKIPPED;
+        }
+
+        appendTimelineEntry(entry);
+        return TIMELINE_ADDED;
+    } catch (error) {
+        console.error("[Psychograph] Timeline call failed:", error);
+        return TIMELINE_SKIPPED;
+    }
+}
+
+// Runs on the predecessor for the same reason the State pass does: the newest
+// message is still swipeable, and an entry written from a swipe that is then
+// replaced cannot be taken back out of an append-only list.
+async function extractTimelineForNewMessage(settings, profileId) {
+    if (!settings.timeline.autoExtract) {
+        return;
+    }
+
+    const message = getContext().chat.at(-2);
+    if (!isTimelineMessage(message, settings.timeline.includeHidden) || isTimelineExtracted(message)) {
+        return;
+    }
+    markTimelineExtracted(message);
+
+    await queueTimelineWork(() => extractTimelineEntry(profileId, message));
+}
+
 let timelineBuildRunning = false;
 let timelineBuildCancelled = false;
 
@@ -1288,7 +1365,6 @@ async function buildTimeline() {
     }
 
     const chatState = ensureChatState();
-    const schema = buildTimelineSchema();
     timelineBuildRunning = true;
     timelineBuildCancelled = false;
     $("#psychograph_timeline_build").text("Stop");
@@ -1308,27 +1384,12 @@ async function buildTimeline() {
             const message = messages[i];
             $("#psychograph_timeline_status").text(`Message ${i + 1}/${messages.length}, ${added} entries added, ${discarded} discarded…`);
 
-            try {
-                const prompt = buildTimelinePrompt(readTimeline(), readMessageSpeaker(message), message.mes);
-                const result = await sendJsonSchemaRequest(profileId, "timeline_entry", schema, prompt, TIMELINE_ENTRY_MAX_TOKENS);
-                console.log(`[Psychograph] Timeline reasoning for message ${i + 1}:`, result.reasoning);
-
-                const entry = normalizeTimelineEntry(result.entry);
-                if (result.significant !== true || !entry) {
-                    continue;
-                }
-                if (!await shouldKeepTimelineEntry(profileId, entry)) {
-                    discarded++;
-                    continue;
-                }
-                if (!isCurrentChatState(chatState)) {
-                    console.warn("[Psychograph] Chat changed during the timeline build, discarding the entry.");
-                    break;
-                }
-                appendTimelineEntry(entry);
+            const outcome = await queueTimelineWork(() => extractTimelineEntry(profileId, message));
+            markTimelineExtracted(message);
+            if (outcome === TIMELINE_ADDED) {
                 added++;
-            } catch (error) {
-                console.error(`[Psychograph] Timeline call failed for message ${i + 1}:`, error);
+            } else if (outcome === TIMELINE_DISCARDED) {
+                discarded++;
             }
         }
 
@@ -1571,41 +1632,51 @@ function handleChatMessageEvent() {
             return;
         }
 
-        const eligibleAreaKeys = Object.keys(AREA_SLOT_CONFIGS).filter((key) =>
-            settings.state.areas[key].enabled);
-        if (eligibleAreaKeys.length === 0) {
-            return;
-        }
-
         const profileId = settings.connectionProfile;
         if (!profileId) {
             warnOnce("profile:none", NO_PROFILE_WARNING);
-            console.warn("[Psychograph] Area gate: no connection profile configured, skipping.");
+            console.warn("[Psychograph] No connection profile configured, skipping extraction.");
             return;
         }
 
-        await runExclusiveStateExtraction(async () => {
-            if (!ensureChatState().seeded) {
-                await seedChatStateFromCard(eligibleAreaKeys);
-            }
-
-            const chat = getContext().chat;
-            // The newest message is still swipeable, and a swipe re-fires this
-            // event with new text — extracting it would apply a second diff on
-            // top of state the first run already moved. The predecessor is
-            // settled, so it can only ever be extracted once.
-            const message = chat[chat.length - 2];
-            if (!isStoryMessage(message) || isStateExtracted(message)) {
-                return;
-            }
-            markStateExtracted(message);
-
-            const speaker = readMessageSpeaker(message);
-            const gatedAreaKeys = await runAreaGate(profileId, eligibleAreaKeys, message.mes, speaker);
-            await Promise.all(gatedAreaKeys.map((areaKey) => runAreaExtraction(areaKey, message.mes, speaker)));
-            await refreshStateInject();
-        });
+        // The two layers write to different places and neither reads the
+        // other's result, so the timeline call rides alongside the State pass
+        // rather than after it.
+        await Promise.all([
+            extractStateForNewMessage(settings, profileId),
+            extractTimelineForNewMessage(settings, profileId),
+        ]);
     };
+}
+
+async function extractStateForNewMessage(settings, profileId) {
+    const eligibleAreaKeys = Object.keys(AREA_SLOT_CONFIGS).filter((key) =>
+        settings.state.areas[key].enabled);
+    if (eligibleAreaKeys.length === 0) {
+        return;
+    }
+
+    await runExclusiveStateExtraction(async () => {
+        if (!ensureChatState().seeded) {
+            await seedChatStateFromCard(eligibleAreaKeys);
+        }
+
+        const chat = getContext().chat;
+        // The newest message is still swipeable, and a swipe re-fires this
+        // event with new text — extracting it would apply a second diff on
+        // top of state the first run already moved. The predecessor is
+        // settled, so it can only ever be extracted once.
+        const message = chat[chat.length - 2];
+        if (!isStoryMessage(message) || isStateExtracted(message)) {
+            return;
+        }
+        markStateExtracted(message);
+
+        const speaker = readMessageSpeaker(message);
+        const gatedAreaKeys = await runAreaGate(profileId, eligibleAreaKeys, message.mes, speaker);
+        await Promise.all(gatedAreaKeys.map((areaKey) => runAreaExtraction(areaKey, message.mes, speaker)));
+        await refreshStateInject();
+    });
 }
 
 function bindChatEvents() {
