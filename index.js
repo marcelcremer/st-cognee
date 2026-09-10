@@ -25,6 +25,7 @@ const AREA_DIFF_MAX_TOKENS = 250;
 const AREA_SLOT_UPDATE_MAX_TOKENS = 200;
 const AREA_GATE_MAX_TOKENS = 200;
 const TIMELINE_ENTRY_MAX_TOKENS = 300;
+const TIMELINE_KEEP_MAX_TOKENS = 200;
 
 // Values a model reaches for when a slot holds nothing. Outside Clothes these
 // are an absence and must not reach the prompt; inside Clothes "none" is itself
@@ -520,6 +521,44 @@ function buildTimelineSchema() {
             },
         },
         required: ["reasoning", "significant", "entry"],
+        additionalProperties: false,
+    };
+}
+
+// Deliberately context-free: the entry is judged on its own substance, not
+// against the timeline it would join. Under evaluation against the user's own
+// model — see CLAUDE.md before touching any of this wording.
+function buildTimelineKeepPrompt(entry) {
+    return buildPromptDocument([
+        {
+            heading: "# Task Description",
+            content: "You will see a single candidate timeline entry, with no other context. Your job is to judge whether it's substantial enough to keep on a long-running story timeline, or whether it should be discarded as too minor.",
+        },
+        {
+            heading: "## The test",
+            content: "If you were a book summarizer who had to create a timeline of events - would you include this summary in your timeline or discard it?",
+        },
+        {
+            heading: "## Output format",
+            content: `Respond with ONLY a JSON object (no markdown code fence), using exactly this shape:\n{"reasoning": "...", "keep": true | false}`,
+        },
+    ], "", entry);
+}
+
+function buildTimelineKeepSchema() {
+    return {
+        type: "object",
+        properties: {
+            reasoning: {
+                type: "string",
+                description: "One concise sentence working through the test above, before answering.",
+            },
+            keep: {
+                type: "boolean",
+                description: "True if the entry is substantial enough for a long-running story timeline.",
+            },
+        },
+        required: ["reasoning", "keep"],
         additionalProperties: false,
     };
 }
@@ -1194,6 +1233,25 @@ function appendTimelineEntry(entry) {
     writeTimeline(existing ? `${existing}\n- ${entry}` : `- ${entry}`);
 }
 
+async function shouldKeepTimelineEntry(profileId, entry) {
+    try {
+        const verdict = await sendJsonSchemaRequest(
+            profileId,
+            "timeline_keep",
+            buildTimelineKeepSchema(),
+            buildTimelineKeepPrompt(entry),
+            TIMELINE_KEEP_MAX_TOKENS,
+        );
+        console.log(`[Psychograph] Timeline keep reasoning for "${entry}":`, verdict.reasoning);
+        return verdict.keep === true;
+    } catch (error) {
+        // The entry already passed the extraction call, and deleting a line is
+        // cheaper than rebuilding the chat to recover one.
+        console.error("[Psychograph] Timeline keep call failed, keeping the entry:", error);
+        return true;
+    }
+}
+
 let timelineBuildRunning = false;
 let timelineBuildCancelled = false;
 
@@ -1226,6 +1284,7 @@ async function buildTimeline() {
     $("#psychograph_timeline_build").text("Stop");
 
     let added = 0;
+    let discarded = 0;
     try {
         for (let i = 0; i < messages.length; i++) {
             if (timelineBuildCancelled) {
@@ -1237,7 +1296,7 @@ async function buildTimeline() {
             }
 
             const message = messages[i];
-            $("#psychograph_timeline_status").text(`Message ${i + 1}/${messages.length}, ${added} entries added…`);
+            $("#psychograph_timeline_status").text(`Message ${i + 1}/${messages.length}, ${added} entries added, ${discarded} discarded…`);
 
             try {
                 const prompt = buildTimelinePrompt(readTimeline(), readMessageSpeaker(message), message.mes);
@@ -1246,6 +1305,10 @@ async function buildTimeline() {
 
                 const entry = normalizeTimelineEntry(result.entry);
                 if (result.significant !== true || !entry) {
+                    continue;
+                }
+                if (!await shouldKeepTimelineEntry(profileId, entry)) {
+                    discarded++;
                     continue;
                 }
                 if (!isCurrentChatState(chatState)) {
@@ -1259,10 +1322,11 @@ async function buildTimeline() {
             }
         }
 
+        const summary = `${added} new entries, ${discarded} discarded as too minor.`;
         if (timelineBuildCancelled) {
-            toastr.info(`Stopped after ${added} new entries.`, "Psychograph");
+            toastr.info(`Stopped after ${summary}`, "Psychograph");
         } else {
-            toastr.success(`Timeline built, ${added} new entries.`, "Psychograph");
+            toastr.success(`Timeline built: ${summary}`, "Psychograph");
         }
     } finally {
         timelineBuildRunning = false;
