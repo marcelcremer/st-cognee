@@ -1710,7 +1710,6 @@ async function compactTriggerMap(profileId) {
             return false;
         }
 
-        captureUndoSnapshot("compacting the trigger map");
         writeTriggerEntries(compacted);
         console.log(`[Psychograph] Trigger map compacted from ${before.length} to ${compacted.length} entries.`);
         return true;
@@ -1771,6 +1770,85 @@ async function rerunTriggerExtractionNow() {
     }
 }
 
+let triggerBuildRunning = false;
+let triggerBuildCancelled = false;
+
+// Same shape as the timeline build, and for the same reason the map is handed
+// to every call: nothing here dedupes in code, the map in the prompt does it.
+// Compaction runs on its interval during the build too, or a long chat would
+// finish with a map that needs one anyway.
+async function buildTriggerMap() {
+    if (triggerBuildRunning) {
+        triggerBuildCancelled = true;
+        return;
+    }
+
+    const settings = ensureSettings();
+    const profileId = settings.connectionProfile;
+    if (!profileId) {
+        toastr.warning(NO_PROFILE_WARNING, "Psychograph");
+        return;
+    }
+
+    const messages = getContext().chat.filter((message) => isTimelineMessage(message, settings.triggers.includeHidden));
+    if (messages.length === 0) {
+        toastr.info("No messages in this chat yet.", "Psychograph");
+        return;
+    }
+
+    const chatState = ensureChatState();
+    const interval = Number(settings.triggers.compactionInterval) || 0;
+    captureUndoSnapshot("the trigger map build");
+    triggerBuildRunning = true;
+    triggerBuildCancelled = false;
+    $("#psychograph_triggers_build").text("Stop");
+
+    let added = 0;
+    let compactions = 0;
+    let sinceCompaction = 0;
+    try {
+        for (let i = 0; i < messages.length; i++) {
+            if (triggerBuildCancelled) {
+                break;
+            }
+            if (!isCurrentChatState(chatState)) {
+                console.warn("[Psychograph] Chat changed during the trigger map build, stopping.");
+                break;
+            }
+
+            const message = messages[i];
+            $("#psychograph_triggers_status").text(
+                `Message ${i + 1}/${messages.length}, ${added} patterns, ${compactions} compactions…`,
+            );
+
+            added += await queueTriggerWork(() => extractTriggersForMessage(profileId, message));
+            markTriggersExtracted(message);
+
+            sinceCompaction += 1;
+            if (interval > 0 && sinceCompaction >= interval) {
+                sinceCompaction = 0;
+                if (await queueTriggerWork(() => compactTriggerMap(profileId))) {
+                    compactions += 1;
+                }
+            }
+        }
+
+        chatState.triggerMap.sinceCompaction = sinceCompaction;
+        getContext().saveMetadataDebounced();
+
+        const summary = `${added} patterns found, ${readTriggerEntries().length} on the map after ${compactions} compactions.`;
+        if (triggerBuildCancelled) {
+            toastr.info(`Stopped. ${summary}`, "Psychograph");
+        } else {
+            toastr.success(`Trigger map built: ${summary}`, "Psychograph");
+        }
+    } finally {
+        triggerBuildRunning = false;
+        $("#psychograph_triggers_build").text("Build trigger map");
+        $("#psychograph_triggers_status").text("");
+    }
+}
+
 async function compactTriggerMapNow() {
     const settings = ensureSettings();
     if (!settings.connectionProfile) {
@@ -1783,6 +1861,7 @@ async function compactTriggerMapNow() {
     }
 
     toastr.info("Compacting the trigger map…", "Psychograph");
+    captureUndoSnapshot("compacting the trigger map");
     const before = readTriggerEntries().length;
     const compacted = await queueTriggerWork(() => compactTriggerMap(settings.connectionProfile));
 
@@ -2421,9 +2500,11 @@ function buildSheetTriggersPaneHtml() {
                 <label for="psychograph_triggers_compaction_interval">Compact every N messages (0 = never)</label>
                 <input id="psychograph_triggers_compaction_interval" type="number" min="0" step="1" class="text_pole" />
                 <div class="flex-container">
+                    <div id="psychograph_triggers_build" class="menu_button">Build trigger map</div>
                     <div id="psychograph_triggers_compact" class="menu_button">Compact now</div>
                     <div id="psychograph_triggers_add" class="menu_button">Add entry</div>
                 </div>
+                <small id="psychograph_triggers_status"></small>
                 <small>Compaction merges entries that describe the same pattern. It is the only call that rewrites what is already on the map, so it snapshots first.</small>
             </div>
             <table class="psychograph-trigger-table">
@@ -2619,6 +2700,7 @@ function bindSheetEvents() {
 
     $("#psychograph_sheet_extract").on("click", extractActiveSheetTabNow);
     $("#psychograph_sheet_restore").on("click", restorePreviousState);
+    $("#psychograph_triggers_build").on("click", buildTriggerMap);
     $("#psychograph_triggers_compact").on("click", compactTriggerMapNow);
 
     $("#psychograph_triggers_add").on("click", function () {
