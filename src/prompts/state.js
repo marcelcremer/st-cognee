@@ -58,7 +58,10 @@ export function buildAreaSlotUpdatePrompt(config, slot, currentState, message, s
 
     return buildPromptDocument([
         { heading: "# Task Description", content: buildSheetIntro(config, "one specific slot", mode) },
-        { heading: "## Slot", content: `Your current task is to work on the following slot: ${qualifiedSlotName(config, slot)}.` },
+        {
+            heading: "## Slot",
+            content: `Your current task is to work on the following slot: ${qualifiedSlotName(config, slot)}.\nUpdate the state of ${qualifiedSlotName(config, slot)} based on the message below.`,
+        },
         { heading: "## Slot description", content: config.groupDescription },
         overrides.profileContext
             ? { heading: "## Character profile", content: `"""\n${overrides.profileContext()}\n"""` }
@@ -76,7 +79,7 @@ export function buildAreaSlotUpdatePrompt(config, slot, currentState, message, s
                     ? (overrides.seedUpdateRules ?? config.seedUpdateRules)
                     : (overrides.updateRules ?? config.updateRules)),
                 buildAttributionRule(config),
-                "There are multiple slots on the sheet. You MUST only concentrate only on your assigned slot.",
+                `There are multiple slots on the sheet. You MUST only concentrate only on ${qualifiedSlotName(config, slot)}.`,
             ]),
         },
         buildHintSection(config),

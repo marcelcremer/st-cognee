@@ -84,8 +84,13 @@ async function askAreaDiff(areaKey, message, speaker, mode = MESSAGE_MODE) {
         return [];
     }
 
-    return expandTriggeredSlots(config, slots.filter((slot) => diff[slot] === true))
+    const changedSlots = expandTriggeredSlots(config, slots.filter((slot) => diff[slot] === true))
         .filter((slot) => slots.includes(slot));
+    // The reasoning above says it in prose; this says which slots the booleans
+    // actually came back true for, which is the line worth reading when a value
+    // lands in the wrong slot.
+    console.log(`[Psychograph] ${config.label} diff flagged:`, changedSlots.length ? changedSlots.join(", ") : "nothing");
+    return changedSlots;
 }
 
 // The writing half: each call is handed the slot's current value and overwrites
