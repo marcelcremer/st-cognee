@@ -75,7 +75,7 @@ async function seedKnowledgeFromCard(layer, profileId) {
     return added;
 }
 
-export async function extractKnowledgeForNewMessage(layer, settings, profileId) {
+export function extractKnowledgeForNewMessage(layer, settings, profileId) {
     const layerSettings = settings.knowledge[layer.id];
     if (!layerSettings.autoExtract) {
         return;
@@ -100,16 +100,33 @@ export async function extractKnowledgeForNewMessage(layer, settings, profileId) 
     }
     getContext().saveMetadataDebounced();
 
-    await queueKnowledgeWork(layer, async () => {
-        if (needsSeed) {
+    // Seeding establishes the baseline every later candidate is scored against,
+    // so a chat that still needs it keeps the whole pass in the lane.
+    if (needsSeed) {
+        return queueKnowledgeWork(layer, async () => {
             await seedKnowledgeFromCard(layer, profileId);
-        }
-        if (!readsMessage) {
-            return;
-        }
+            if (readsMessage) {
+                await extractKnowledgeFromMessage(layer, profileId, message);
+            }
+        });
+    }
 
-        await extractKnowledgeFromMessage(layer, profileId, message);
+    // Otherwise only taking the answer in has to take its turn - the same split
+    // the backfill already runs on. Asking early means the list in the prompt
+    // can be a message behind, which costs a duplicate candidate that the
+    // absorb step scores away anyway.
+    const asked = askForKnowledgeEntries(
+        layer,
+        profileId,
+        layer.buildPrompt(renderKnowledgeForPrompt(layer), readMessageSpeaker(message), message.mes),
+        KNOWLEDGE_ENTRY_MAX_TOKENS,
+        "message",
+    ).catch((error) => {
+        console.error(`[Psychograph] ${layer.label} ask failed:`, error);
+        return [];
     });
+
+    return queueKnowledgeWork(layer, async () => absorbKnowledgeEntries(layer, profileId, await asked, chatState));
 }
 
 export async function rerunKnowledgeExtractionNow(layer) {

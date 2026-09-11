@@ -12,8 +12,17 @@ import { ensureSettings } from "./settings.js";
 import { renderChatState, renderCogneeChatSection } from "./ui/settings-panel.js";
 import { captureUndoSnapshot } from "./undo.js";
 
+// Nothing here is awaited, and that is the point: emit() awaits every listener
+// in turn, and sendMessageAsUser() awaits MESSAGE_SENT from inside Generate(),
+// so awaiting the round would hold the reply until every extraction call has
+// finished. Each layer marks its message and queues its work synchronously; the
+// model calls happen in the lanes afterwards.
+function startExtraction(work) {
+    Promise.resolve(work).catch((error) => console.error("[Psychograph] Extraction failed:", error));
+}
+
 function handleChatMessageEvent() {
-    return async function () {
+    return function () {
         const settings = ensureSettings();
         if (!settings.enabled) {
             return;
@@ -28,14 +37,11 @@ function handleChatMessageEvent() {
 
         captureUndoSnapshot("the last message");
 
-        // The two layers write to different places and neither reads the
-        // other's result, so the timeline call rides alongside the State pass
-        // rather than after it.
-        await Promise.all([
-            extractStateForNewMessage(settings, profileId),
-            extractTimelineForNewMessage(settings, profileId),
-            ...KNOWLEDGE_KEYS.map((key) => extractKnowledgeForNewMessage(KNOWLEDGE_LAYERS[key], settings, profileId)),
-        ]);
+        startExtraction(extractStateForNewMessage(settings, profileId));
+        startExtraction(extractTimelineForNewMessage(settings, profileId));
+        for (const key of KNOWLEDGE_KEYS) {
+            startExtraction(extractKnowledgeForNewMessage(KNOWLEDGE_LAYERS[key], settings, profileId));
+        }
     };
 }
 

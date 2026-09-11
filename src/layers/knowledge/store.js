@@ -1,11 +1,12 @@
 import { getContext } from "../../sillytavern.js";
 import { ensureChatState, isCurrentChatState } from "../../chat-state.js";
+import { knowledgeLane, runInLane } from "../../extraction-queue.js";
 import { sendJsonSchemaRequest } from "../../llm/request.js";
 import { rerankCandidates } from "../../llm/similarity.js";
 import { buildKnowledgeMergePrompt, buildKnowledgeSchema } from "../../prompts/knowledge.js";
 import { ensureSettings } from "../../settings.js";
 import { renderKnowledgeGroups } from "../../ui/sheet.js";
-import { KNOWLEDGE_KEYS, KNOWLEDGE_MERGE_MAX_TOKENS } from "./layers.js";
+import { KNOWLEDGE_MERGE_MAX_TOKENS } from "./layers.js";
 
 export function readKnowledgeEntries(layer) {
     return ensureChatState().knowledge[layer.id].entries;
@@ -53,11 +54,8 @@ export function renderKnowledgeForPrompt(layer) {
 // One queue per layer: two runs appending to the same list would each be told
 // the other's entry does not exist yet. Separate layers never touch the same
 // list, so they run side by side.
-const knowledgeWork = Object.fromEntries(KNOWLEDGE_KEYS.map((key) => [key, Promise.resolve()]));
-
 export function queueKnowledgeWork(layer, task) {
-    knowledgeWork[layer.id] = knowledgeWork[layer.id].catch(() => {}).then(task);
-    return knowledgeWork[layer.id];
+    return runInLane(knowledgeLane(layer), task);
 }
 
 // Knowledge only. The timeline runs its own extraction and is deliberately left

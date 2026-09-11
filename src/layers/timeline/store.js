@@ -1,5 +1,6 @@
 import { getContext } from "../../sillytavern.js";
 import { ensureChatState } from "../../chat-state.js";
+import { TIMELINE_LANE, runInLane } from "../../extraction-queue.js";
 import { renderSheetHeader } from "../../ui/sheet.js";
 
 export function readTimeline() {
@@ -26,11 +27,8 @@ export function appendTimelineEntry(entry) {
 
 // Both callers append to the same text blob and read it back as the prompt's
 // "already on the timeline", so they take turns rather than interleave.
-let timelineWork = Promise.resolve();
-
 export function queueTimelineWork(task) {
-    timelineWork = timelineWork.catch(() => {}).then(task);
-    return timelineWork;
+    return runInLane(TIMELINE_LANE, task);
 }
 
 export const TIMELINE_ADDED = "added";

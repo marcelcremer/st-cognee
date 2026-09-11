@@ -1,6 +1,7 @@
 import { getContext } from "../../sillytavern.js";
 import { ensureChatState, isCurrentChatState } from "../../chat-state.js";
 import { MESSAGE_MODE, SEED_MODE } from "../../constants.js";
+import { STATE_LANE, runInLane } from "../../extraction-queue.js";
 import { refreshContextInject } from "../../injects.js";
 import { NO_PROFILE_WARNING, sendJsonSchemaRequest, warnOnce } from "../../llm/request.js";
 import { isStateExtracted, isStoryMessage, markStateExtracted, readMessageSpeaker } from "../../messages.js";
@@ -45,60 +46,59 @@ function expandTriggeredSlots(config, changedSlots) {
     return config.slots.filter((slot) => expanded.has(slot));
 }
 
-// Two overlapping runs read the same slot values as their base and write back
-// one after the other, so the later run's write silently drops the earlier
-// one's change.
-let stateExtractionInFlight = false;
-
-async function runExclusiveStateExtraction(task) {
-    if (stateExtractionInFlight) {
-        console.warn("[Psychograph] State extraction already in progress, skipping this trigger.");
-        return false;
-    }
-
-    stateExtractionInFlight = true;
-    try {
-        await task();
-    } finally {
-        stateExtractionInFlight = false;
-    }
-    return true;
-}
-
-async function runAreaExtraction(areaKey, message, speaker, mode = MESSAGE_MODE) {
-    const settings = ensureSettings();
-    const profileId = settings.connectionProfile;
+function resolveExtractionProfile(areaKey) {
+    const profileId = ensureSettings().connectionProfile;
     if (!profileId) {
         warnOnce("profile:none", NO_PROFILE_WARNING);
         console.warn(`[Psychograph] ${areaKey} extraction: no connection profile configured, skipping.`);
+    }
+    return profileId;
+}
+
+// The asking half. buildAreaDiffPrompt gets the message and nothing else - only
+// buildAreaSlotUpdatePrompt is handed a slot's current value - so this can run
+// for a message while the one before it is still writing its slots.
+async function askAreaDiff(areaKey, message, speaker, mode = MESSAGE_MODE) {
+    const profileId = resolveExtractionProfile(areaKey);
+    if (!profileId) {
+        return [];
+    }
+
+    const config = AREA_SLOT_CONFIGS[areaKey];
+    const slots = mode === SEED_MODE
+        ? config.slots.filter((slot) => !config.slotOverrides?.[slot]?.skipOnSeed)
+        : config.slots;
+
+    let diff;
+    try {
+        diff = await sendJsonSchemaRequest(
+            profileId,
+            `${areaKey}_diff`,
+            buildAreaDiffSchema(config, slots, mode),
+            buildAreaDiffPrompt(config, slots, message, speaker, mode),
+            AREA_DIFF_MAX_TOKENS,
+        );
+        console.log(`[Psychograph] ${config.label} diff reasoning:`, diff.reasoning);
+    } catch (error) {
+        console.error(`[Psychograph] ${config.label} diff call failed:`, error);
+        return [];
+    }
+
+    return expandTriggeredSlots(config, slots.filter((slot) => diff[slot] === true))
+        .filter((slot) => slots.includes(slot));
+}
+
+// The writing half: each call is handed the slot's current value and overwrites
+// it, so this is what has to take its turn per message.
+async function applyAreaSlots(areaKey, changedSlots, message, speaker, mode = MESSAGE_MODE) {
+    const profileId = resolveExtractionProfile(areaKey);
+    if (!profileId || changedSlots.length === 0) {
         return;
     }
 
     const config = AREA_SLOT_CONFIGS[areaKey];
     const chatState = ensureChatState();
-    const slots = mode === SEED_MODE
-        ? config.slots.filter((slot) => !config.slotOverrides?.[slot]?.skipOnSeed)
-        : config.slots;
-    const diffPrompt = buildAreaDiffPrompt(config, slots, message, speaker, mode);
-    const diffSchema = buildAreaDiffSchema(config, slots, mode);
-
-    let diff;
-    try {
-        diff = await sendJsonSchemaRequest(profileId, `${areaKey}_diff`, diffSchema, diffPrompt, AREA_DIFF_MAX_TOKENS);
-        console.log(`[Psychograph] ${config.label} diff reasoning:`, diff.reasoning);
-    } catch (error) {
-        console.error(`[Psychograph] ${config.label} diff call failed:`, error);
-        return;
-    }
-
     if (!isCurrentChatState(chatState)) {
-        console.warn(`[Psychograph] Chat changed during the ${config.label} diff, discarding the result.`);
-        return;
-    }
-
-    const changedSlots = expandTriggeredSlots(config, slots.filter((slot) => diff[slot] === true))
-        .filter((slot) => slots.includes(slot));
-    if (changedSlots.length === 0) {
         return;
     }
 
@@ -135,33 +135,78 @@ async function runAreaExtraction(areaKey, message, speaker, mode = MESSAGE_MODE)
     getContext().saveMetadataDebounced();
 }
 
-export async function extractStateForNewMessage(settings, profileId) {
+async function runAreaExtraction(areaKey, message, speaker, mode = MESSAGE_MODE) {
+    await applyAreaSlots(areaKey, await askAreaDiff(areaKey, message, speaker, mode), message, speaker, mode);
+}
+
+// Gate first, then one diff per area it let through - all of it message-only,
+// so the whole ask runs while the lane is still busy with the message before.
+async function askStateChanges(profileId, eligibleAreaKeys, message, speaker) {
+    const gatedAreaKeys = await runAreaGate(profileId, eligibleAreaKeys, message, speaker);
+    const perArea = await Promise.all(gatedAreaKeys.map(async (areaKey) => ({
+        areaKey,
+        changedSlots: await askAreaDiff(areaKey, message, speaker),
+    })));
+    return perArea.filter(({ changedSlots }) => changedSlots.length > 0);
+}
+
+// Two overlapping runs would read the same slot values as their base and write
+// back one after the other, so the later run's write would silently drop the
+// earlier one's change. The lane is what keeps them apart - and it is a queue
+// rather than a skip, because a skipped message is never offered again: the
+// next trigger reads a different predecessor.
+export function extractStateForNewMessage(settings, profileId) {
     const eligibleAreaKeys = Object.keys(AREA_SLOT_CONFIGS).filter((key) =>
         settings.state.areas[key].enabled);
     if (eligibleAreaKeys.length === 0) {
         return;
     }
 
-    await runExclusiveStateExtraction(async () => {
-        if (!ensureChatState().seeded) {
+    const chat = getContext().chat;
+    // The newest message is still swipeable, and a swipe re-fires this event
+    // with new text — extracting it would apply a second diff on top of state
+    // the first run already moved. The predecessor is settled, so it can only
+    // ever be extracted once.
+    const message = chat[chat.length - 2];
+    const needsSeed = !ensureChatState().seeded;
+    const readsMessage = isStoryMessage(message) && !isStateExtracted(message);
+    if (!needsSeed && !readsMessage) {
+        return;
+    }
+
+    // Both markers are set here rather than inside the lane: the listener runs
+    // again before the queued job does, and an unmarked message would be
+    // queued a second time.
+    if (needsSeed) {
+        ensureChatState().seeded = true;
+    }
+    if (readsMessage) {
+        markStateExtracted(message);
+    }
+
+    // Started here rather than inside the lane, and its rejection handled here
+    // too: the lane only awaits it much later, which would otherwise surface as
+    // an unhandled rejection in between.
+    const speaker = readsMessage ? readMessageSpeaker(message) : "";
+    const asked = readsMessage
+        ? askStateChanges(profileId, eligibleAreaKeys, message.mes, speaker).catch((error) => {
+            console.error("[Psychograph] State ask failed:", error);
+            return [];
+        })
+        : Promise.resolve([]);
+
+    runInLane(STATE_LANE, async () => {
+        if (needsSeed) {
             await seedChatStateFromCard(eligibleAreaKeys);
         }
-
-        const chat = getContext().chat;
-        // The newest message is still swipeable, and a swipe re-fires this
-        // event with new text — extracting it would apply a second diff on
-        // top of state the first run already moved. The predecessor is
-        // settled, so it can only ever be extracted once.
-        const message = chat[chat.length - 2];
-        if (!isStoryMessage(message) || isStateExtracted(message)) {
+        if (!readsMessage) {
             return;
         }
-        markStateExtracted(message);
 
-        const speaker = readMessageSpeaker(message);
         noteLastExtraction(message, "state");
-        const gatedAreaKeys = await runAreaGate(profileId, eligibleAreaKeys, message.mes, speaker);
-        await Promise.all(gatedAreaKeys.map((areaKey) => runAreaExtraction(areaKey, message.mes, speaker)));
+        const changes = await asked;
+        await Promise.all(changes.map(({ areaKey, changedSlots }) =>
+            applyAreaSlots(areaKey, changedSlots, message.mes, speaker)));
         await refreshContextInject();
     });
 }
@@ -178,16 +223,16 @@ export async function rerunAreaExtractionNow(areaKey) {
         return;
     }
 
+    // Queued in the same lane as the automatic pass rather than refused while
+    // one is running: it reads the slot values as its base too, so it has to
+    // take its turn, but a button press should not be thrown away.
     const config = AREA_SLOT_CONFIGS[areaKey];
-    const ran = await runExclusiveStateExtraction(async () => {
-        toastr.info(`Analyzing ${config.label.toLowerCase()} for the last message…`, "Psychograph");
+    toastr.info(`Analyzing ${config.label.toLowerCase()} for the last message…`, "Psychograph");
+    await runInLane(STATE_LANE, async () => {
         captureUndoSnapshot(`the ${config.label.toLowerCase()} extraction`);
         await runAreaExtraction(areaKey, lastMessage.mes, readMessageSpeaker(lastMessage));
         noteLastExtraction(lastMessage, config.label);
     });
-    if (!ran) {
-        toastr.warning("Another extraction is still running, try again in a moment.", "Psychograph");
-    }
 }
 
 function readAreaSeedText(config) {

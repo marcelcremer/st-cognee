@@ -184,6 +184,7 @@ together on jQuery ready. Everything else lives under `src/`:
 | `src/chat-state.js` | The per-chat `chat_metadata` branch: `ensureChatState()`, the layout migrations, and who the sheet is about. |
 | `src/messages.js` | What counts as a story/timeline message, and the per-message "already extracted" markers. |
 | `src/undo.js` | The one-step snapshot behind "Restore previous". |
+| `src/extraction-queue.js` | The FIFO lane per layer, the concurrency budget while a generation runs, and the count behind the toolbar spinner. |
 | `src/llm/` | `request.js` — profile resolution, the schema-enforced request, the backfill pool. `similarity.js` — rerank/embedding calls that go straight to the user's own server. |
 | `src/prompts/` | Prompt text and response schemas only, one file per layer. Nothing here reads or writes state. |
 | `src/layers/state/` | `areas.js` — the 14 slots across 3 areas and their per-area config. `extraction.js` — the gate -> diff -> per-slot-update pipeline. |
