@@ -92,7 +92,7 @@ export function buildGoalInject(goal) {
     return [
         "## Current goal",
         `{{char}} is quietly pursuing: ${goal}`,
-        "This is one thread among many — do not let it override {{char}}'s immediate reactions, other drivers, or the scene's actual demands. It's influence subtle and unconscious.",
+        "This is one thread among many — do not let it override {{char}}'s immediate reactions, other drivers, or the scene's actual demands. Its influence is subtle and unconscious.",
     ].join("\n");
 }
 
