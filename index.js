@@ -1230,6 +1230,9 @@ function ensureChatState() {
         chatState.knowledge[key] = chatState.knowledge[key] || legacy || {};
         chatState.knowledge[key].entries = chatState.knowledge[key].entries || [];
         chatState.knowledge[key].sinceCompaction = chatState.knowledge[key].sinceCompaction || 0;
+        if (chatState.knowledge[key].seeded === undefined) {
+            chatState.knowledge[key].seeded = chatState.knowledge[key].entries.length > 0;
+        }
     }
     delete chatState.triggerMap;
 
@@ -2222,20 +2225,39 @@ async function extractKnowledgeForNewMessage(layer, settings, profileId) {
         return;
     }
 
+    const chatState = ensureChatState();
     const message = getContext().chat.at(-2);
-    if (!isTimelineMessage(message, layerSettings.includeHidden) || isKnowledgeExtracted(layer, message)) {
+    // Seeding runs before the first message is read rather than off a message
+    // id, so it also works when the extension is switched on mid-chat.
+    const needsSeed = !chatState.knowledge[layer.id].seeded;
+    const readsMessage = isTimelineMessage(message, layerSettings.includeHidden)
+        && !isKnowledgeExtracted(layer, message);
+    if (!needsSeed && !readsMessage) {
         return;
     }
-    markKnowledgeExtracted(layer, message);
+
+    if (needsSeed) {
+        chatState.knowledge[layer.id].seeded = true;
+    }
+    if (readsMessage) {
+        markKnowledgeExtracted(layer, message);
+    }
+    getContext().saveMetadataDebounced();
 
     await queueKnowledgeWork(layer, async () => {
+        if (needsSeed) {
+            await seedKnowledgeFromCard(layer, profileId);
+        }
+        if (!readsMessage) {
+            return;
+        }
+
         await extractKnowledgeFromMessage(layer, profileId, message);
 
-        const chatState = ensureChatState();
         const interval = Number(layerSettings.compactionInterval) || 0;
-        chatState.knowledge[layer.id].sinceCompaction += 1;
-        if (interval > 0 && chatState.knowledge[layer.id].sinceCompaction >= interval) {
-            chatState.knowledge[layer.id].sinceCompaction = 0;
+        ensureChatState().knowledge[layer.id].sinceCompaction += 1;
+        if (interval > 0 && ensureChatState().knowledge[layer.id].sinceCompaction >= interval) {
+            ensureChatState().knowledge[layer.id].sinceCompaction = 0;
             await compactKnowledge(layer, profileId);
         }
         getContext().saveMetadataDebounced();
@@ -2281,6 +2303,7 @@ async function seedKnowledgeFromCardNow(layer) {
 
     toastr.info(`Reading the profiles for ${layer.label.toLowerCase()}…`, "Psychograph");
     captureUndoSnapshot(`reading the profiles for ${layer.label.toLowerCase()}`);
+    ensureChatState().knowledge[layer.id].seeded = true;
     const added = await queueKnowledgeWork(layer, () => seedKnowledgeFromCard(layer, settings.connectionProfile));
 
     if (added > 0) {
@@ -2381,6 +2404,7 @@ async function buildKnowledge(layer) {
         // chat at all, and for a profile that is most of what there is to know.
         knowledgeBuildStatus[layer.id] = `${layer.label}: profile…`;
         renderKnowledgeBuildStatus();
+        chatState.knowledge[layer.id].seeded = true;
         added += await queueKnowledgeWork(layer, () => seedKnowledgeFromCard(layer, profileId));
 
         for (let i = 0; i < messages.length; i++) {
