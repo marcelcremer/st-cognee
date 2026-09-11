@@ -665,37 +665,6 @@ If nothing qualifies, use an empty array: {"reasoning": "...", "entries": []}`,
     ], `Profile of ${name}`, profile);
 }
 
-// PROVISIONAL WORDING — a placeholder for one tested against the user's own
-// model, see CLAUDE.md. The numbering is not cosmetic: merged_from is what
-// lets applyTriggerCompaction() check that nothing was silently dropped.
-function buildTriggerCompactionPrompt(numberedMap) {
-    return buildPromptDocument([
-        {
-            heading: "# Task Description",
-            content: `You will see a numbered trigger map — the standing "whenever X happens, this character reliably does Y" patterns of the characters in a roleplay. Your job is to find the entries that say the same thing twice and write one entry that replaces them. You are not rewriting the list.`,
-        },
-        {
-            heading: "## The test",
-            content: bulletList([
-                "Two entries belong together when their triggers describe the same condition for the same character, or when one trigger is the broader case of the other.",
-                "Entries for different characters are never merged, and neither are two triggers whose conditions are genuinely different.",
-                "The merged response must state everything the originals stated — join them, never pick one and drop the other.",
-                "Report ONLY the groups you are merging. Every entry you do not mention stays exactly as it is — you never have to repeat it.",
-                "An entry belongs to at most one group, and a group has at least two entries.",
-                "Never invent anything that is not in the list below.",
-                "Reasoning is just for debug — one concise sentence is enough.",
-            ]),
-        },
-        {
-            heading: "## Output format",
-            content: `Respond with ONLY a JSON object (no markdown code fence), using exactly this shape:
-{"reasoning": "...", "merges": [{"merged_from": [1, 4], "character": "...", "trigger": "...", "response": "..."}]}
-
-"merged_from" lists the numbers of the entries that went into that one. If nothing should be merged, use an empty array: {"reasoning": "...", "merges": []}`,
-        },
-    ], "", numberedMap);
-}
-
 // --- Facts -------------------------------------------------------------
 // PROVISIONAL WORDING, not yet tested against the user's model.
 
@@ -781,34 +750,6 @@ Skip anything the list above already states, even in different words. Only write
 If nothing qualifies, use an empty array: {"reasoning": "...", "entries": []}`,
         },
     ], `Profile of ${name}`, profile);
-}
-
-function buildFactCompactionPrompt(numberedMap) {
-    return buildPromptDocument([
-        {
-            heading: "# Task Description",
-            content: "You will see a numbered list of facts about the people in a roleplay. Your job is to find the entries that say the same thing twice and write one entry that replaces them. You are not rewriting the list.",
-        },
-        {
-            heading: "## The test",
-            content: bulletList([
-                "Two entries belong together when they state the same fact in different words, or when one is a narrower version of the other.",
-                "Entries about different subjects, or about different relations, are never merged.",
-                "When two entries contradict each other, merge them into what the entry with the higher number says — a fact stated later replaces the same fact stated earlier.",
-                "Report ONLY the groups you are merging. Every entry you do not mention stays exactly as it is — you never have to repeat it.",
-                "An entry belongs to at most one group, and a group has at least two entries.",
-                "Never invent anything that is not in the list below.",
-                "Reasoning is just for debug — one concise sentence is enough.",
-            ]),
-        },
-        {
-            heading: "## Output format",
-            content: `Respond with ONLY a JSON object (no markdown code fence), using exactly this shape:
-{"reasoning": "...", "merges": [{"merged_from": [1, 4], "subject": "...", "relation": "...", "object": "..."}]}
-
-"merged_from" lists the numbers of the entries that went into that one. If nothing should be merged, use an empty array: {"reasoning": "...", "merges": []}`,
-        },
-    ], "", numberedMap);
 }
 
 // --- Dispositions ------------------------------------------------------
@@ -900,36 +841,8 @@ If nothing qualifies, use an empty array: {"reasoning": "...", "entries": []}`,
     ], `Profile of ${name}`, profile);
 }
 
-function buildDispositionCompactionPrompt(numberedMap) {
-    return buildPromptDocument([
-        {
-            heading: "# Task Description",
-            content: "You will see a numbered list of the lasting dispositions of the characters in a roleplay. Your job is to find the entries that say the same thing twice and write one entry that replaces them. You are not rewriting the list.",
-        },
-        {
-            heading: "## The test",
-            content: bulletList([
-                "Two entries belong together when they describe the same disposition of the same character in different words, or when one is a narrower version of the other.",
-                "Entries for different characters are never merged, and neither are two dispositions that would show up differently in behaviour.",
-                "When a later entry supersedes an earlier one for the same character, merge them into what holds now.",
-                "Report ONLY the groups you are merging. Every entry you do not mention stays exactly as it is — you never have to repeat it.",
-                "An entry belongs to at most one group, and a group has at least two entries.",
-                "Never invent anything that is not in the list below.",
-                "Reasoning is just for debug — one concise sentence is enough.",
-            ]),
-        },
-        {
-            heading: "## Output format",
-            content: `Respond with ONLY a JSON object (no markdown code fence), using exactly this shape:
-{"reasoning": "...", "merges": [{"merged_from": [1, 4], "character": "...", "disposition": "..."}]}
-
-"merged_from" lists the numbers of the entries that went into that one. If nothing should be merged, use an empty array: {"reasoning": "...", "merges": []}`,
-        },
-    ], "", numberedMap);
-}
-
 // The three layers are one machine with three configurations: same table, same
-// backfill, same compaction, same repair. What is deliberately NOT shared is
+// backfill and same card seeding. What is deliberately NOT shared is
 // the model call — a 4B asked for three kinds at once gets less reliable, and
 // a truncated mixed array drops whichever kind came last without looking like
 // a failure.
@@ -951,7 +864,6 @@ const KNOWLEDGE_LAYERS = {
         injectEntry: (entry) => `- ${entry.subject} ${entry.relation} ${entry.object}`,
         buildPrompt: buildFactPrompt,
         buildSeedPrompt: buildFactSeedPrompt,
-        buildCompactionPrompt: buildFactCompactionPrompt,
     },
     dispositions: {
         id: "dispositions",
@@ -969,7 +881,6 @@ const KNOWLEDGE_LAYERS = {
         injectEntry: (entry) => `- ${entry.character} ${entry.disposition}`,
         buildPrompt: buildDispositionPrompt,
         buildSeedPrompt: buildDispositionSeedPrompt,
-        buildCompactionPrompt: buildDispositionCompactionPrompt,
     },
     triggers: {
         id: "triggers",
@@ -988,41 +899,10 @@ const KNOWLEDGE_LAYERS = {
         injectEntry: (entry) => `- When ${entry.character} ${entry.trigger}: ${entry.response}`,
         buildPrompt: buildTriggerMapPrompt,
         buildSeedPrompt: buildTriggerSeedPrompt,
-        buildCompactionPrompt: buildTriggerCompactionPrompt,
     },
 };
 
 const KNOWLEDGE_KEYS = Object.keys(KNOWLEDGE_LAYERS);
-
-function buildKnowledgeMergeSchema(layer) {
-    const properties = Object.fromEntries(
-        layer.fields.map((field) => [field, { type: "string", description: layer.fieldDescriptions[field] }]),
-    );
-    properties.merged_from = {
-        type: "array",
-        description: "The numbers of the entries that go into this one. At least two.",
-        items: { type: "integer" },
-    };
-
-    return {
-        type: "object",
-        properties: {
-            reasoning: { type: "string", description: "One concise sentence on what is being merged, before answering." },
-            merges: {
-                type: "array",
-                description: "One object per group being merged. Empty when nothing should be merged.",
-                items: {
-                    type: "object",
-                    properties,
-                    required: ["merged_from", ...layer.fields],
-                    additionalProperties: false,
-                },
-            },
-        },
-        required: ["reasoning", "merges"],
-        additionalProperties: false,
-    };
-}
 
 function buildKnowledgeSchema(layer, reasoningDescription) {
     const properties = Object.fromEntries(
@@ -1061,7 +941,6 @@ const defaultSettings = {
         autoExtract: true,
         includeHidden: true,
         injectEnabled: true,
-        compactionInterval: 10,
     }])),
     timeline: {
         autoExtract: true,
@@ -1253,7 +1132,7 @@ function ensureChatState() {
         const legacy = key === "triggers" ? chatState.triggerMap : null;
         chatState.knowledge[key] = chatState.knowledge[key] || legacy || {};
         chatState.knowledge[key].entries = chatState.knowledge[key].entries || [];
-        chatState.knowledge[key].sinceCompaction = chatState.knowledge[key].sinceCompaction || 0;
+        delete chatState.knowledge[key].sinceCompaction;
         if (chatState.knowledge[key].seeded === undefined) {
             chatState.knowledge[key].seeded = chatState.knowledge[key].entries.length > 0;
         }
@@ -1366,7 +1245,6 @@ function renderSettings() {
         $(`#psychograph_${key}_auto_extract`).prop("checked", settings.knowledge[key].autoExtract);
         $(`#psychograph_${key}_include_hidden`).prop("checked", settings.knowledge[key].includeHidden);
         $(`#psychograph_${key}_inject_enabled`).prop("checked", settings.knowledge[key].injectEnabled);
-        $(`#psychograph_${key}_compaction_interval`).val(settings.knowledge[key].compactionInterval);
     }
     renderCogneeChatSection();
 
@@ -1494,10 +1372,6 @@ function bindSettingsEvents() {
             saveSettingsDebounced();
         });
 
-        $(`#psychograph_${key}_compaction_interval`).on("input", function () {
-            ensureSettings().knowledge[key].compactionInterval = Math.max(0, Number($(this).val()) || 0);
-            saveSettingsDebounced();
-        });
     }
 
     $("#psychograph_timeline_build").on("click", buildTimeline);
@@ -2087,14 +1961,6 @@ function renderKnowledgeForPrompt(layer) {
         .join("\n\n");
 }
 
-// Flat and numbered rather than grouped: the numbers are what the model
-// references in merged_from, so they have to be unambiguous.
-function renderKnowledgeNumbered(layer) {
-    return readKnowledgeEntries(layer)
-        .map((entry, index) => `${index + 1}. ${layer.fields.map((field) => entry[field]).join(" | ")}`)
-        .join("\n");
-}
-
 // One queue per layer: two runs appending to the same list would each be told
 // the other's entry does not exist yet. Separate layers never touch the same
 // list, so they run side by side.
@@ -2183,94 +2049,6 @@ async function seedKnowledgeFromCard(layer, profileId) {
     return added;
 }
 
-// Only the groups being merged come back, so an entry the model does not
-// mention is kept by construction rather than by a repair pass — it never
-// passes through the generator at all, which is what keeps wording from
-// drifting on entries nobody asked to change.
-function applyKnowledgeMerges(layer, before, merges) {
-    const used = new Set();
-    const mergedAt = new Map();
-
-    for (const merge of merges) {
-        const positions = [...new Set(merge.mergedFrom)]
-            .map((number) => number - 1)
-            .filter((position) => position >= 0 && position < before.length && !used.has(position));
-        if (positions.length < 2) {
-            console.warn(`[Psychograph] ${layer.label} compaction: ignoring a group that covers fewer than two untouched entries.`, merge);
-            continue;
-        }
-
-        for (const position of positions) {
-            used.add(position);
-        }
-        mergedAt.set(Math.min(...positions), Object.fromEntries(layer.fields.map((field) => [field, merge[field]])));
-    }
-
-    // Rebuilt in the original order, with each group collapsed onto the
-    // position of its first member.
-    const after = [];
-    before.forEach((entry, position) => {
-        if (mergedAt.has(position)) {
-            after.push(mergedAt.get(position));
-        } else if (!used.has(position)) {
-            after.push(entry);
-        }
-    });
-    return after;
-}
-
-async function compactKnowledge(layer, profileId) {
-    const chatState = ensureChatState();
-    const before = readKnowledgeEntries(layer);
-    if (before.length < 2) {
-        return false;
-    }
-
-    try {
-        const result = await sendJsonSchemaRequest(
-            profileId,
-            `${layer.id}_compaction`,
-            buildKnowledgeMergeSchema(layer),
-            layer.buildCompactionPrompt(renderKnowledgeNumbered(layer)),
-            // Only the merges come back, so this scales with how much is
-            // duplicated rather than with how long the list is.
-            Math.max(400, before.length * 20),
-        );
-        console.log(`[Psychograph] ${layer.label} compaction reasoning:`, result.reasoning);
-
-        const merges = (Array.isArray(result.merges) ? result.merges : [])
-            .map((raw) => {
-                const entry = readKnowledgeEntry(layer, raw);
-                if (!entry) {
-                    return null;
-                }
-                entry.mergedFrom = (Array.isArray(raw.merged_from) ? raw.merged_from : [])
-                    .map((number) => Number(number))
-                    .filter((number) => Number.isInteger(number));
-                return entry;
-            })
-            .filter(Boolean);
-        if (merges.length === 0) {
-            return false;
-        }
-        if (!isCurrentChatState(chatState)) {
-            return false;
-        }
-
-        const after = applyKnowledgeMerges(layer, before, merges);
-        if (after.length === before.length) {
-            return false;
-        }
-
-        writeKnowledgeEntries(layer, after);
-        console.log(`[Psychograph] ${layer.label} compacted from ${before.length} to ${after.length} entries.`);
-        return true;
-    } catch (error) {
-        console.error(`[Psychograph] ${layer.label} compaction failed:`, error);
-        return false;
-    }
-}
-
 async function extractKnowledgeForNewMessage(layer, settings, profileId) {
     const layerSettings = settings.knowledge[layer.id];
     if (!layerSettings.autoExtract) {
@@ -2305,14 +2083,6 @@ async function extractKnowledgeForNewMessage(layer, settings, profileId) {
         }
 
         await extractKnowledgeFromMessage(layer, profileId, message);
-
-        const interval = Number(layerSettings.compactionInterval) || 0;
-        ensureChatState().knowledge[layer.id].sinceCompaction += 1;
-        if (interval > 0 && ensureChatState().knowledge[layer.id].sinceCompaction >= interval) {
-            ensureChatState().knowledge[layer.id].sinceCompaction = 0;
-            await compactKnowledge(layer, profileId);
-        }
-        getContext().saveMetadataDebounced();
     });
 }
 
@@ -2342,52 +2112,6 @@ async function rerunKnowledgeExtractionNow(layer) {
     }
 }
 
-async function seedKnowledgeFromCardNow(layer) {
-    const settings = ensureSettings();
-    if (!settings.connectionProfile) {
-        toastr.warning(NO_PROFILE_WARNING, "Psychograph");
-        return;
-    }
-    if (readKnowledgeSeedSources().length === 0) {
-        toastr.warning("No character description or persona to read.", "Psychograph");
-        return;
-    }
-
-    toastr.info(`Reading the profiles for ${layer.label.toLowerCase()}…`, "Psychograph");
-    captureUndoSnapshot(`reading the profiles for ${layer.label.toLowerCase()}`);
-    ensureChatState().knowledge[layer.id].seeded = true;
-    const added = await queueKnowledgeWork(layer, () => seedKnowledgeFromCard(layer, settings.connectionProfile));
-
-    if (added > 0) {
-        toastr.success(`${added} ${added === 1 ? "entry" : "entries"} from the profiles.`, "Psychograph");
-    } else {
-        toastr.info(`Nothing for ${layer.label.toLowerCase()} in the profiles.`, "Psychograph");
-    }
-}
-
-async function compactKnowledgeNow(layer) {
-    const settings = ensureSettings();
-    if (!settings.connectionProfile) {
-        toastr.warning(NO_PROFILE_WARNING, "Psychograph");
-        return;
-    }
-    if (readKnowledgeEntries(layer).length < 2) {
-        toastr.info("Not enough entries to compact.", "Psychograph");
-        return;
-    }
-
-    toastr.info(`Compacting ${layer.label.toLowerCase()}…`, "Psychograph");
-    captureUndoSnapshot(`compacting ${layer.label.toLowerCase()}`);
-    const before = readKnowledgeEntries(layer).length;
-    const compacted = await queueKnowledgeWork(layer, () => compactKnowledge(layer, settings.connectionProfile));
-
-    if (compacted) {
-        toastr.success(`${layer.label}: ${before} entries in, ${readKnowledgeEntries(layer).length} out.`, "Psychograph");
-    } else {
-        toastr.info("Nothing merged, the list is unchanged.", "Psychograph");
-    }
-}
-
 const knowledgeBuildRunning = {};
 const knowledgeBuildCancelled = {};
 const knowledgeBuildStatus = {};
@@ -2414,14 +2138,12 @@ async function buildAllKnowledge() {
     try {
         await Promise.all(KNOWLEDGE_KEYS.map((key) => buildKnowledge(KNOWLEDGE_LAYERS[key])));
     } finally {
-        $("#psychograph_knowledge_build").text("Build all");
+        $("#psychograph_knowledge_build").text("Backfill");
     }
 }
 
 // Same shape as the timeline build, and for the same reason the list is handed
 // to every call: nothing here dedupes in code, the list in the prompt does it.
-// Compaction runs on its interval during the build too, or a long chat would
-// finish with a list that needs one anyway.
 async function buildKnowledge(layer) {
     if (knowledgeBuildRunning[layer.id]) {
         knowledgeBuildCancelled[layer.id] = true;
@@ -2443,14 +2165,11 @@ async function buildKnowledge(layer) {
     }
 
     const chatState = ensureChatState();
-    const interval = Number(layerSettings.compactionInterval) || 0;
-    captureUndoSnapshot(`the ${layer.label.toLowerCase()} build`);
+    captureUndoSnapshot(`the ${layer.label.toLowerCase()} backfill`);
     knowledgeBuildRunning[layer.id] = true;
     knowledgeBuildCancelled[layer.id] = false;
 
     let added = 0;
-    let compactions = 0;
-    let sinceCompaction = 0;
     try {
         // Before message #0: what the card establishes may never come up in the
         // chat at all, and for a profile that is most of what there is to know.
@@ -2472,20 +2191,9 @@ async function buildKnowledge(layer) {
             renderKnowledgeBuildStatus();
             added += await queueKnowledgeWork(layer, () => extractKnowledgeFromMessage(layer, profileId, messages[i]));
             markKnowledgeExtracted(layer, messages[i]);
-
-            sinceCompaction += 1;
-            if (interval > 0 && sinceCompaction >= interval) {
-                sinceCompaction = 0;
-                if (await queueKnowledgeWork(layer, () => compactKnowledge(layer, profileId))) {
-                    compactions += 1;
-                }
-            }
         }
 
-        chatState.knowledge[layer.id].sinceCompaction = sinceCompaction;
-        getContext().saveMetadataDebounced();
-
-        const summary = `${added} found, ${readKnowledgeEntries(layer).length} on the list after ${compactions} compactions.`;
+        const summary = `${added} found, ${readKnowledgeEntries(layer).length} on the list.`;
         if (knowledgeBuildCancelled[layer.id]) {
             toastr.info(`Stopped. ${summary}`, "Psychograph");
         } else {
@@ -2524,7 +2232,7 @@ async function buildTimeline() {
     }
 
     const chatState = ensureChatState();
-    captureUndoSnapshot("the timeline build");
+    captureUndoSnapshot("the timeline backfill");
     timelineBuildRunning = true;
     timelineBuildCancelled = false;
     $("#psychograph_timeline_build").text("Stop");
@@ -2575,7 +2283,7 @@ async function buildTimeline() {
         }
     } finally {
         timelineBuildRunning = false;
-        $("#psychograph_timeline_build").text("Build timeline");
+        $("#psychograph_timeline_build").text("Backfill");
         $("#psychograph_timeline_status").text("");
     }
 }
@@ -3013,27 +2721,6 @@ async function seedChatStateFromCard(eligibleAreaKeys) {
     }));
 }
 
-async function initAreaFromDescription(areaKey) {
-    const config = AREA_SLOT_CONFIGS[areaKey];
-    const { text, missingLabel } = readAreaSeedText(config);
-
-    if (!text || !text.trim()) {
-        toastr.warning(missingLabel, "Psychograph");
-        return;
-    }
-
-    const ran = await runExclusiveStateExtraction(async () => {
-        toastr.info(`Initializing ${config.label.toLowerCase()} from description…`, "Psychograph");
-        captureUndoSnapshot(`initializing ${config.label.toLowerCase()} from the card`);
-        ensureChatState().seeded = true;
-        await runAreaExtraction(areaKey, text, "", SEED_MODE);
-        getContext().saveMetadataDebounced();
-    });
-    if (!ran) {
-        toastr.warning("Another extraction is still running, try again in a moment.", "Psychograph");
-    }
-}
-
 const SHEET_ID = "psychograph_sheet";
 const SHEET_TIMELINE_TAB = "timeline";
 
@@ -3073,9 +2760,6 @@ function buildSheetAreaPaneHtml(areaKey) {
                 </label>
                 <span class="psychograph-sheet-count">${config.slots.length} fields</span>
             </div>
-            <div class="psychograph-sheet-actions">
-                <div id="psychograph_sheet_init_${config.id}" class="menu_button" title="Fill the slots from the character card instead of from the chat">Init from description</div>
-            </div>
             <div class="psychograph-sheet-fields">${fields}</div>
         </div>
     `;
@@ -3093,7 +2777,7 @@ function buildSheetTimelinePaneHtml() {
                 <div class="psychograph-sheet-options-toggle fa-solid fa-gear interactable" data-tab="${SHEET_TIMELINE_TAB}" title="Settings" tabindex="0"></div>
             </div>
             <div class="psychograph-sheet-actions">
-                <div id="psychograph_timeline_build" class="menu_button">Build timeline</div>
+                <div id="psychograph_timeline_build" class="menu_button" title="Read every message in this chat">Backfill</div>
                 <div id="psychograph_timeline_clear" class="menu_button">Clear</div>
             </div>
             <small id="psychograph_timeline_status" class="psychograph-sheet-hint"></small>
@@ -3136,8 +2820,6 @@ function buildSheetKnowledgePaneHtml() {
                     <input id="psychograph_${key}_inject_enabled" type="checkbox" />
                     ${layer.label}: inject into the prompt
                 </label>
-                <label for="psychograph_${key}_compaction_interval">${layer.label}: compact every N messages (0 = never)</label>
-                <input id="psychograph_${key}_compaction_interval" type="number" min="0" step="1" class="text_pole" />
             </div>
         `;
     }).join("");
@@ -3149,9 +2831,8 @@ function buildSheetKnowledgePaneHtml() {
                 <div class="psychograph-sheet-options-toggle fa-solid fa-gear interactable" data-tab="${SHEET_KNOWLEDGE_TAB}" title="Settings" tabindex="0"></div>
             </div>
             <div class="psychograph-sheet-actions">
-                <div id="psychograph_knowledge_build" class="menu_button">Build all</div>
-                <div id="psychograph_knowledge_seed" class="menu_button" title="Read the character description and persona">Init from description</div>
-                <div id="psychograph_knowledge_compact" class="menu_button" title="Merge entries that say the same thing">Compact</div>
+                <div id="psychograph_knowledge_build" class="menu_button" title="Read the character profiles, then every message in this chat">Backfill</div>
+                <div id="psychograph_knowledge_clear" class="menu_button" title="Empty all three lists for this chat">Clear all</div>
             </div>
             <small id="psychograph_knowledge_status" class="psychograph-sheet-hint"></small>
             <div class="psychograph-sheet-options" data-tab="${SHEET_KNOWLEDGE_TAB}">${layerSettings}</div>
@@ -3185,7 +2866,7 @@ function buildSheetBodyHtml() {
         <div class="psychograph-sheet-footer">
             <span id="psychograph_sheet_status" class="psychograph-sheet-hint"></span>
             <div class="psychograph-sheet-footer-buttons">
-                <div id="psychograph_sheet_restore" class="menu_button" title="Undo what the last extraction changed">Restore previous</div>
+                <div id="psychograph_sheet_restore" class="menu_button" title="Undo what the last extraction changed">Restore</div>
                 <div id="psychograph_sheet_extract" class="menu_button">Extract now</div>
             </div>
         </div>
@@ -3436,8 +3117,25 @@ function bindSheetEvents() {
     $("#psychograph_sheet_extract").on("click", extractActiveSheetTabNow);
     $("#psychograph_sheet_restore").on("click", restorePreviousState);
     $("#psychograph_knowledge_build").on("click", buildAllKnowledge);
-    $("#psychograph_knowledge_seed").on("click", () => runForEveryKnowledgeLayer(seedKnowledgeFromCardNow));
-    $("#psychograph_knowledge_compact").on("click", () => runForEveryKnowledgeLayer(compactKnowledgeNow));
+
+    $("#psychograph_knowledge_clear").on("click", async function () {
+        const context = getContext();
+        const confirmed = await context.callGenericPopup(
+            "Clear the facts, dispositions and triggers of this chat? Restore previous can bring them back until the next extraction.",
+            context.POPUP_TYPE.CONFIRM,
+        );
+        if (confirmed !== context.POPUP_RESULT.AFFIRMATIVE) {
+            return;
+        }
+
+        captureUndoSnapshot("clearing the knowledge lists");
+        for (const key of KNOWLEDGE_KEYS) {
+            // Cleared by hand means the card should be read again on the next
+            // pass, or an emptied list would stay empty for the rest of the chat.
+            ensureChatState().knowledge[key].seeded = false;
+            writeKnowledgeEntries(KNOWLEDGE_LAYERS[key], []);
+        }
+    });
 
     $("#psychograph_knowledge_add_group").on("click", function () {
         const layer = KNOWLEDGE_LAYERS[KNOWLEDGE_KEYS[0]];
@@ -3505,11 +3203,6 @@ function bindSheetEvents() {
         writeKnowledgeEntries(layer, readKnowledgeEntries(layer).filter((_, position) => position !== index));
     });
 
-    for (const { key } of STATE_AREAS) {
-        $(`#psychograph_sheet_init_${AREA_SLOT_CONFIGS[key].id}`).on("click", async function () {
-            await initAreaFromDescription(key);
-        });
-    }
 }
 
 function buildToolbarButton() {
