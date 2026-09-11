@@ -2,7 +2,7 @@ import { eventSource, event_types, getContext } from "./sillytavern.js";
 import { flushCogneeRecallInject, flushKnowledgeInject, flushMotivationInject, flushStateInject, flushTimelineInject, handleCogneeRecall, handleInjectsForGeneration } from "./injects.js";
 import { handleCogneeIngestion } from "./layers/cognee.js";
 import { extractKnowledgeForNewMessage } from "./layers/knowledge/extraction.js";
-import { KNOWLEDGE_LAYERS } from "./layers/knowledge/layers.js";
+import { KNOWLEDGE_KEYS, KNOWLEDGE_LAYERS } from "./layers/knowledge/layers.js";
 import { readMotivationRoll } from "./layers/motivation/lottery.js";
 import { extractStateForNewMessage } from "./layers/state/extraction.js";
 import { extractTimelineForNewMessage } from "./layers/timeline/extraction.js";
