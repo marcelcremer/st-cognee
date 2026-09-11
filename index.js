@@ -2254,6 +2254,33 @@ async function compactKnowledgeNow(layer) {
 
 const knowledgeBuildRunning = {};
 const knowledgeBuildCancelled = {};
+const knowledgeBuildStatus = {};
+
+function renderKnowledgeBuildStatus() {
+    $("#psychograph_knowledge_status").text(
+        KNOWLEDGE_KEYS.map((key) => knowledgeBuildStatus[key]).filter(Boolean).join(" · "),
+    );
+}
+
+// The three layers never read each other's list, so their builds run side by
+// side. Within a layer the calls stay in order: each one is handed the list so
+// far as "already known", which is the only thing stopping the next message
+// from recording what the previous one just did.
+async function buildAllKnowledge() {
+    if (KNOWLEDGE_KEYS.some((key) => knowledgeBuildRunning[key])) {
+        for (const key of KNOWLEDGE_KEYS) {
+            knowledgeBuildCancelled[key] = true;
+        }
+        return;
+    }
+
+    $("#psychograph_knowledge_build").text("Stop");
+    try {
+        await Promise.all(KNOWLEDGE_KEYS.map((key) => buildKnowledge(KNOWLEDGE_LAYERS[key])));
+    } finally {
+        $("#psychograph_knowledge_build").text("Build all");
+    }
+}
 
 // Same shape as the timeline build, and for the same reason the list is handed
 // to every call: nothing here dedupes in code, the list in the prompt does it.
@@ -2281,12 +2308,9 @@ async function buildKnowledge(layer) {
 
     const chatState = ensureChatState();
     const interval = Number(layerSettings.compactionInterval) || 0;
-    const statusElement = $("#psychograph_knowledge_status");
-    const buildButton = $("#psychograph_knowledge_build");
     captureUndoSnapshot(`the ${layer.label.toLowerCase()} build`);
     knowledgeBuildRunning[layer.id] = true;
     knowledgeBuildCancelled[layer.id] = false;
-    buildButton.text("Stop");
 
     let added = 0;
     let compactions = 0;
@@ -2294,7 +2318,8 @@ async function buildKnowledge(layer) {
     try {
         // Before message #0: what the card establishes may never come up in the
         // chat at all, and for a profile that is most of what there is to know.
-        statusElement.text(`${layer.label}: reading the character profile…`);
+        knowledgeBuildStatus[layer.id] = `${layer.label}: profile…`;
+        renderKnowledgeBuildStatus();
         added += await queueKnowledgeWork(layer, () => seedKnowledgeFromCard(layer, profileId));
 
         for (let i = 0; i < messages.length; i++) {
@@ -2306,7 +2331,8 @@ async function buildKnowledge(layer) {
                 break;
             }
 
-            statusElement.text(`${layer.label}: ${i + 1}/${messages.length} messages · ${added} entries · ${compactions} compactions…`);
+            knowledgeBuildStatus[layer.id] = `${layer.label} ${i + 1}/${messages.length}, ${added} found`;
+            renderKnowledgeBuildStatus();
             added += await queueKnowledgeWork(layer, () => extractKnowledgeFromMessage(layer, profileId, messages[i]));
             markKnowledgeExtracted(layer, messages[i]);
 
@@ -2330,8 +2356,8 @@ async function buildKnowledge(layer) {
         }
     } finally {
         knowledgeBuildRunning[layer.id] = false;
-        buildButton.text("Build all");
-        statusElement.text("");
+        knowledgeBuildStatus[layer.id] = "";
+        renderKnowledgeBuildStatus();
     }
 }
 
@@ -3203,12 +3229,10 @@ function renderSheetFooter() {
     $("#psychograph_sheet_restore").toggleClass("disabled", !chatState.previous);
 }
 
-// The three layers share one set of buttons, so an action runs them in turn
-// rather than three times over: one press, one round of work.
+// The three layers share one set of buttons. Nothing orders them against each
+// other, so one press runs all three at once.
 async function runForEveryKnowledgeLayer(action) {
-    for (const key of KNOWLEDGE_KEYS) {
-        await action(KNOWLEDGE_LAYERS[key]);
-    }
+    await Promise.all(KNOWLEDGE_KEYS.map((key) => action(KNOWLEDGE_LAYERS[key])));
 }
 
 async function extractActiveSheetTabNow() {
@@ -3269,7 +3293,7 @@ function bindSheetEvents() {
 
     $("#psychograph_sheet_extract").on("click", extractActiveSheetTabNow);
     $("#psychograph_sheet_restore").on("click", restorePreviousState);
-    $("#psychograph_knowledge_build").on("click", () => runForEveryKnowledgeLayer(buildKnowledge));
+    $("#psychograph_knowledge_build").on("click", buildAllKnowledge);
     $("#psychograph_knowledge_seed").on("click", () => runForEveryKnowledgeLayer(seedKnowledgeFromCardNow));
     $("#psychograph_knowledge_compact").on("click", () => runForEveryKnowledgeLayer(compactKnowledgeNow));
 
