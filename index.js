@@ -841,6 +841,33 @@ If nothing qualifies, use an empty array: {"reasoning": "...", "entries": []}`,
     ], `Profile of ${name}`, profile);
 }
 
+// PROVISIONAL WORDING, not yet tested against the user's model. Deliberately
+// tiny: two entries in, one line out, with no list and no bookkeeping — which
+// is the whole point of deciding at write time instead of compacting later.
+function buildKnowledgeMergePrompt(layer, existing, candidate) {
+    const render = (entry) => layer.fields.map((field) => `${field}: ${entry[field]}`).join("\n");
+
+    return buildPromptDocument([
+        {
+            heading: "# Task Description",
+            content: `You will see two entries from a ${layer.label.toLowerCase()} list that describe the same thing. Write the single entry that replaces them both.`,
+        },
+        {
+            heading: "## Rules",
+            content: bulletList([
+                "The new entry must state everything both entries state — join them, never pick one and drop the other.",
+                "Keep it as short as the originals, and in the same style.",
+                "Add nothing that is not in one of the two entries.",
+                "Reasoning is just for debug — one concise sentence is enough.",
+            ]),
+        },
+        {
+            heading: "## Output format",
+            content: `Respond with ONLY a JSON object (no markdown code fence), using exactly this shape:\n{"reasoning": "...", ${layer.fields.map((field) => `"${field}": "..."`).join(", ")}}`,
+        },
+    ], "", `Entry A\n${render(existing)}\n\nEntry B\n${render(candidate)}`);
+}
+
 // The three layers are one machine with three configurations: same table, same
 // backfill and same card seeding. What is deliberately NOT shared is
 // the model call — a 4B asked for three kinds at once gets less reliable, and
@@ -936,6 +963,8 @@ const defaultSettings = {
         // Which of the two spellings this server answered on, so the working
         // one is not re-discovered on every call.
         rerankPath: "",
+        duplicateThreshold: 0.5,
+        mergeDuplicates: true,
     },
     cognee: {
         baseUrl: "",
@@ -1261,6 +1290,8 @@ function renderSettings() {
     $("#psychograph_similarity_api_key").val(settings.similarity.apiKey);
     $("#psychograph_similarity_rerank_model").val(settings.similarity.rerankModel);
     $("#psychograph_similarity_embedding_model").val(settings.similarity.embeddingModel);
+    $("#psychograph_similarity_threshold").val(settings.similarity.duplicateThreshold);
+    $("#psychograph_similarity_merge").prop("checked", settings.similarity.mergeDuplicates);
     $("#psychograph_timeline_auto_extract").prop("checked", settings.timeline.autoExtract);
     $("#psychograph_timeline_include_hidden").prop("checked", settings.timeline.includeHidden);
     $("#psychograph_timeline_inject_enabled").prop("checked", settings.timeline.injectEnabled);
@@ -1320,6 +1351,16 @@ function bindSettingsEvents() {
             saveSettingsDebounced();
         });
     }
+
+    $("#psychograph_similarity_threshold").on("input", function () {
+        ensureSettings().similarity.duplicateThreshold = Math.min(1, Math.max(0, Number($(this).val()) || 0));
+        saveSettingsDebounced();
+    });
+
+    $("#psychograph_similarity_merge").on("change", function () {
+        ensureSettings().similarity.mergeDuplicates = $(this).prop("checked");
+        saveSettingsDebounced();
+    });
 
     $("#psychograph_similarity_test").on("click", testSimilarityService);
 
@@ -2018,6 +2059,103 @@ function knowledgeBudgetFor(text) {
     return Math.min(1500, Math.max(KNOWLEDGE_ENTRY_MAX_TOKENS, Math.round(String(text).length / 4)));
 }
 
+const KNOWLEDGE_MERGE_MAX_TOKENS = 250;
+
+// Knowledge only. The timeline runs its own extraction and is deliberately left
+// out: its entries are events in an order, where two similar lines can both be
+// true, and its "already on the timeline" test is the significance filter
+// itself rather than a duplicate check.
+function isDuplicateSearchConfigured() {
+    const settings = ensureSettings().similarity;
+    return Boolean(settings.baseUrl && settings.rerankModel);
+}
+
+// Only entries about the same character or subject can be duplicates of each
+// other, so the comparison never leaves the group — cheaper, and it makes a
+// cross-character merge impossible rather than unlikely.
+function knowledgeSiblings(layer, candidate) {
+    const entries = readKnowledgeEntries(layer);
+    if (!layer.groupBy) {
+        return entries.map((entry, index) => ({ entry, index }));
+    }
+
+    const group = candidate[layer.groupBy];
+    return entries
+        .map((entry, index) => ({ entry, index }))
+        .filter(({ entry }) => entry[layer.groupBy] === group);
+}
+
+async function findKnowledgeDuplicate(layer, candidate) {
+    const siblings = knowledgeSiblings(layer, candidate);
+    if (siblings.length === 0 || !isDuplicateSearchConfigured()) {
+        return null;
+    }
+
+    try {
+        const scores = await rerankCandidates(
+            layer.injectEntry(candidate),
+            siblings.map(({ entry }) => layer.injectEntry(entry)),
+        );
+        const best = scores[0];
+        if (!best) {
+            return null;
+        }
+
+        const sibling = siblings[best.index];
+        const threshold = Number(ensureSettings().similarity.duplicateThreshold);
+        console.log(
+            `[Psychograph] ${layer.label} candidate "${layer.injectEntry(candidate)}" | closest "${layer.injectEntry(sibling.entry)}" | score ${best.score.toFixed(4)} | threshold ${threshold}`,
+        );
+        return best.score >= threshold ? sibling : null;
+    } catch (error) {
+        // A scorer that is down must not stop entries from being recorded.
+        console.error(`[Psychograph] ${layer.label} duplicate search failed, keeping the entry as new:`, error);
+        return null;
+    }
+}
+
+async function mergeKnowledgeEntries(layer, profileId, existing, candidate) {
+    try {
+        const result = await sendJsonSchemaRequest(
+            profileId,
+            `${layer.id}_merge`,
+            buildKnowledgeSchema(layer, "One concise sentence on what the two entries have in common."),
+            buildKnowledgeMergePrompt(layer, existing, candidate),
+            KNOWLEDGE_MERGE_MAX_TOKENS,
+        );
+        console.log(`[Psychograph] ${layer.label} merge reasoning:`, result.reasoning);
+        return readKnowledgeEntry(layer, result);
+    } catch (error) {
+        console.error(`[Psychograph] ${layer.label} merge call failed, keeping the entry that was already there:`, error);
+        return null;
+    }
+}
+
+// Every candidate is handled on its own and against the list as it stands, so
+// two near-identical entries from the same call meet each other too.
+async function absorbKnowledgeEntry(layer, profileId, candidate) {
+    const duplicate = await findKnowledgeDuplicate(layer, candidate);
+    if (!duplicate) {
+        writeKnowledgeEntries(layer, [...readKnowledgeEntries(layer), candidate]);
+        return "added";
+    }
+
+    if (!ensureSettings().similarity.mergeDuplicates) {
+        console.log(`[Psychograph] ${layer.label}: duplicate of #${duplicate.index + 1}, dropped.`);
+        return "duplicate";
+    }
+
+    const merged = await mergeKnowledgeEntries(layer, profileId, duplicate.entry, candidate);
+    if (!merged) {
+        return "duplicate";
+    }
+
+    const entries = [...readKnowledgeEntries(layer)];
+    entries[duplicate.index] = merged;
+    writeKnowledgeEntries(layer, entries);
+    return "merged";
+}
+
 async function runKnowledgeCall(layer, profileId, prompt, maxTokens, label) {
     const chatState = ensureChatState();
 
@@ -2037,8 +2175,16 @@ async function runKnowledgeCall(layer, profileId, prompt, maxTokens, label) {
             return 0;
         }
 
-        writeKnowledgeEntries(layer, [...readKnowledgeEntries(layer), ...found]);
-        return found.length;
+        let recorded = 0;
+        for (const candidate of found) {
+            if (!isCurrentChatState(chatState)) {
+                return recorded;
+            }
+            if (await absorbKnowledgeEntry(layer, profileId, candidate) !== "duplicate") {
+                recorded += 1;
+            }
+        }
+        return recorded;
     } catch (error) {
         console.error(`[Psychograph] ${layer.label} ${label} call failed:`, error);
         return 0;

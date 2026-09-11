@@ -42,6 +42,16 @@
                     <label for="psychograph_similarity_embedding_model">Embedding model</label>
                     <input id="psychograph_similarity_embedding_model" type="text" class="text_pole" placeholder="model name the server expects" />
 
+                    <label for="psychograph_similarity_threshold">Duplicate threshold</label>
+                    <input id="psychograph_similarity_threshold" type="number" min="0" max="1" step="0.05" class="text_pole" />
+                    <small>A new knowledge entry scoring at or above this against an existing one for the same character counts as the same thing. Every candidate's closest match and score go to the console, so this can be read off real entries rather than guessed. Knowledge only &mdash; the timeline is untouched.</small>
+
+                    <label class="checkbox_label" for="psychograph_similarity_merge">
+                        <input id="psychograph_similarity_merge" type="checkbox" />
+                        Merge duplicates with a model call
+                    </label>
+                    <small>Off: the duplicate is dropped and the existing entry stays as it is. On: one small call writes the entry that replaces both.</small>
+
                     <div id="psychograph_similarity_test" class="menu_button">Test both</div>
                     <small id="psychograph_similarity_status"></small>
                 </div>
