@@ -42,7 +42,6 @@ export const AREA_SLOT_CONFIGS = {
         seedField: "target",
         groupDescription: "Clothes slots describe, where something is worn and not necessarily a category.",
         diffRules: [
-            "Analyze ONLY the message below, not prior context.",
             "For each slot, determine whether the message contains any information about it.",
             "If you find any change for a slot, mark it true. When there is no change about the slot, mark it false.",
         ],
