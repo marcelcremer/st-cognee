@@ -23,7 +23,14 @@ that directory:
 | `eventSource`, `event_types` | `../../../events.js` | `events.js` lives at `public/scripts/events.js` — **same depth as `extensions.js`**, not `script.js`. Easy off-by-one: an extra `../` here resolves to the domain root and 404s. |
 | `ConnectionManagerRequestService` | `../../shared.js` | `public/scripts/extensions/shared.js` — one level *shallower* since it's inside `extensions/` itself |
 
+The table counts from the extension root. A file in a subdirectory needs one
+extra `../` per level, which is how the off-by-one above happens in practice —
+so in this extension every one of these imports is re-exported from
+`src/sillytavern.js` and nothing else imports SillyTavern directly.
+
 Settings HTML is injected via `$("#extensions_settings2").append(fetchedHtml)`.
+An extension is loaded as an ES module, so relative imports between its own
+files work unmodified — no bundler needed to split it across directories.
 
 ## Connection Manager / profiles
 
