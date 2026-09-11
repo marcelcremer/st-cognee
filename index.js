@@ -955,6 +955,7 @@ function buildKnowledgeSchema(layer, reasoningDescription) {
 const defaultSettings = {
     enabled: true,
     connectionProfile: "",
+    parallelRequests: 4,
     similarity: {
         baseUrl: "",
         apiKey: "",
@@ -1140,6 +1141,9 @@ function ensureSettings() {
     if (settings.connectionProfile === undefined) {
         settings.connectionProfile = defaultSettings.connectionProfile;
     }
+    if (!Number.isInteger(settings.parallelRequests) || settings.parallelRequests < 1) {
+        settings.parallelRequests = defaultSettings.parallelRequests;
+    }
 
     return settings;
 }
@@ -1282,6 +1286,7 @@ function renderSettings() {
     const settings = ensureSettings();
     $("#psychograph_enabled").prop("checked", settings.enabled);
     $("#psychograph_connection_profile").val(settings.connectionProfile);
+    $("#psychograph_parallel_requests").val(settings.parallelRequests);
     $("#psychograph_cognee_base_url").val(settings.cognee.baseUrl);
     $("#psychograph_cognee_api_key").val(settings.cognee.apiKey);
     $("#psychograph_cognee_enabled").prop("checked", settings.cognee.enabled);
@@ -1363,6 +1368,11 @@ function bindSettingsEvents() {
     });
 
     $("#psychograph_similarity_test").on("click", testSimilarityService);
+
+    $("#psychograph_parallel_requests").on("input", function () {
+        ensureSettings().parallelRequests = Math.min(16, Math.max(1, Number($(this).val()) || 1));
+        saveSettingsDebounced();
+    });
 
     $("#psychograph_cognee_base_url").on("input", function () {
         ensureSettings().cognee.baseUrl = String($(this).val());
@@ -1562,6 +1572,31 @@ function resolveProfile(profileId) {
     warnIfSchemaEnforcementUnsupported(profile);
     return profile;
 }
+
+// One window across every backfill, not one per layer: the three layers run at
+// the same time, so a per-layer limit of four means twelve requests in flight
+// and the number no longer describes what the backend sees. Interactive calls
+// bypass it, or chatting would queue behind bulk work.
+function createRequestPool(getLimit) {
+    let active = 0;
+    const waiting = [];
+
+    return async function run(task) {
+        while (active >= Math.max(1, getLimit())) {
+            await new Promise((resolve) => waiting.push(resolve));
+        }
+
+        active += 1;
+        try {
+            return await task();
+        } finally {
+            active -= 1;
+            waiting.shift()?.();
+        }
+    };
+}
+
+const backfillPool = createRequestPool(() => ensureSettings().parallelRequests);
 
 async function sendJsonSchemaRequest(profileId, schemaName, schema, prompt, maxTokens) {
     const profile = resolveProfile(profileId);
@@ -2358,6 +2393,7 @@ async function buildKnowledge(layer) {
     knowledgeBuildCancelled[layer.id] = false;
 
     let added = 0;
+    let done = 0;
     try {
         // Before message #0: what the card establishes may never come up in the
         // chat at all, and for a profile that is most of what there is to know.
@@ -2366,39 +2402,36 @@ async function buildKnowledge(layer) {
         chatState.knowledge[layer.id].seeded = true;
         added += await queueKnowledgeWork(layer, () => seedKnowledgeFromCard(layer, profileId));
 
-        // Asking is the slow half and nothing orders one message's question
-        // against another's, so a few run at once; taking the answers in stays
-        // strictly in order, which is what lets a later candidate see what an
-        // earlier one just added. Raise this on a backend with more slots.
-        const batchSize = 4;
-        for (let i = 0; i < messages.length; i += batchSize) {
-            if (knowledgeBuildCancelled[layer.id]) {
-                break;
-            }
-            if (!isCurrentChatState(chatState)) {
-                console.warn(`[Psychograph] Chat changed during the ${layer.label} backfill, stopping.`);
-                break;
-            }
+        // A sliding window rather than batches: with a barrier every four
+        // messages the slots stand idle while the slowest call finishes and
+        // the answers are taken in. Workers pull the next message as soon as
+        // they are free, and the pool is what bounds how many calls are in
+        // flight — across all three layers, not per layer.
+        let next = 0;
+        const workers = Array.from({ length: Math.max(1, ensureSettings().parallelRequests) }, async () => {
+            while (true) {
+                const index = next++;
+                if (index >= messages.length || knowledgeBuildCancelled[layer.id] || !isCurrentChatState(chatState)) {
+                    return;
+                }
 
-            const batch = messages.slice(i, i + batchSize);
-            knowledgeBuildStatus[layer.id] = `${layer.label} ${Math.min(i + batch.length, messages.length)}/${messages.length}, ${added} found`;
-            renderKnowledgeBuildStatus();
+                const message = messages[index];
+                const candidates = await backfillPool(() => askForKnowledgeEntries(
+                    layer,
+                    profileId,
+                    layer.buildPrompt(renderKnowledgeForPrompt(layer), readMessageSpeaker(message), message.mes),
+                    KNOWLEDGE_ENTRY_MAX_TOKENS,
+                    "message",
+                ));
 
-            const answers = await Promise.all(batch.map((message) => askForKnowledgeEntries(
-                layer,
-                profileId,
-                layer.buildPrompt(renderKnowledgeForPrompt(layer), readMessageSpeaker(message), message.mes),
-                KNOWLEDGE_ENTRY_MAX_TOKENS,
-                "message",
-            )));
-
-            for (const candidates of answers) {
                 added += await queueKnowledgeWork(layer, () => absorbKnowledgeEntries(layer, profileId, candidates, chatState));
-            }
-            for (const message of batch) {
                 markKnowledgeExtracted(layer, message);
+                done += 1;
+                knowledgeBuildStatus[layer.id] = `${layer.label} ${done}/${messages.length}, ${added} found`;
+                renderKnowledgeBuildStatus();
             }
-        }
+        });
+        await Promise.all(workers);
 
         const summary = `${added} found, ${readKnowledgeEntries(layer).length} on the list.`;
         if (knowledgeBuildCancelled[layer.id]) {
