@@ -943,6 +943,9 @@ const KNOWLEDGE_LAYERS = {
         emptyPlaceholder: "Nothing known yet.",
         groupBy: "subject",
         renderEntry: (entry) => `${entry.relation} ${entry.object}`,
+        injectHeading: "## Facts",
+        injectIntro: "Those are additional facts that could be helpful for your next turn:",
+        injectEntry: (entry) => `- ${entry.subject} ${entry.relation} ${entry.object}`,
         buildPrompt: buildFactPrompt,
         buildSeedPrompt: buildFactSeedPrompt,
         buildCompactionPrompt: buildFactCompactionPrompt,
@@ -958,6 +961,9 @@ const KNOWLEDGE_LAYERS = {
         emptyPlaceholder: "Nothing known yet.",
         groupBy: "character",
         renderEntry: (entry) => entry.disposition,
+        injectHeading: "## Dispositions",
+        injectIntro: "These are known dispositions for the different Characters:",
+        injectEntry: (entry) => `- ${entry.character} ${entry.disposition}`,
         buildPrompt: buildDispositionPrompt,
         buildSeedPrompt: buildDispositionSeedPrompt,
         buildCompactionPrompt: buildDispositionCompactionPrompt,
@@ -974,6 +980,9 @@ const KNOWLEDGE_LAYERS = {
         emptyPlaceholder: "Nothing known yet.",
         groupBy: "character",
         renderEntry: (entry) => `${entry.trigger} -> ${entry.response}`,
+        injectHeading: "## Triggers",
+        injectIntro: "The following list of triggers will override the Characters behaviour involuntarily. Play the role accordingly:",
+        injectEntry: (entry) => `- When ${entry.character} ${entry.trigger}: ${entry.response}`,
         buildPrompt: buildTriggerMapPrompt,
         buildSeedPrompt: buildTriggerSeedPrompt,
         buildCompactionPrompt: buildTriggerCompactionPrompt,
@@ -1027,6 +1036,7 @@ const defaultSettings = {
     knowledge: Object.fromEntries(KNOWLEDGE_KEYS.map((key) => [key, {
         autoExtract: true,
         includeHidden: true,
+        injectEnabled: true,
         compactionInterval: 10,
     }])),
     timeline: {
@@ -1328,6 +1338,7 @@ function renderSettings() {
     for (const key of KNOWLEDGE_KEYS) {
         $(`#psychograph_${key}_auto_extract`).prop("checked", settings.knowledge[key].autoExtract);
         $(`#psychograph_${key}_include_hidden`).prop("checked", settings.knowledge[key].includeHidden);
+        $(`#psychograph_${key}_inject_enabled`).prop("checked", settings.knowledge[key].injectEnabled);
         $(`#psychograph_${key}_compaction_interval`).val(settings.knowledge[key].compactionInterval);
     }
     renderCogneeChatSection();
@@ -1448,6 +1459,11 @@ function bindSettingsEvents() {
 
         $(`#psychograph_${key}_include_hidden`).on("change", function () {
             ensureSettings().knowledge[key].includeHidden = $(this).prop("checked");
+            saveSettingsDebounced();
+        });
+
+        $(`#psychograph_${key}_inject_enabled`).on("change", function () {
+            ensureSettings().knowledge[key].injectEnabled = $(this).prop("checked");
             saveSettingsDebounced();
         });
 
@@ -1789,7 +1805,7 @@ async function handleInjectsForGeneration(type, _options, dryRun) {
     if (dryRun || type === "quiet") {
         return;
     }
-    await Promise.all([refreshStateInject(), refreshTimelineInject()]);
+    await Promise.all([refreshStateInject(), refreshTimelineInject(), refreshKnowledgeInject()]);
 }
 
 async function flushStateInject() {
@@ -1839,6 +1855,51 @@ async function refreshTimelineInject() {
 
 async function flushTimelineInject() {
     await getContext().executeSlashCommandsWithOptions(`/flushinject ${TIMELINE_INJECT_ID} |`);
+}
+
+const KNOWLEDGE_INJECT_ID = "psychograph_knowledge";
+
+// One inject rather than three: the sections are read together, and their
+// order (what is true, what colours behaviour, what overrides it) is part of
+// what tells the model how much weight each carries.
+function buildKnowledgeSnapshot() {
+    const settings = ensureSettings();
+
+    return KNOWLEDGE_KEYS.map((key) => {
+        const layer = KNOWLEDGE_LAYERS[key];
+        if (!settings.knowledge[key].injectEnabled) {
+            return "";
+        }
+
+        const lines = readKnowledgeEntries(layer)
+            .filter((entry) => layer.fields.every((field) => entry[field]))
+            .map((entry) => sanitizeInjectValue(layer.injectEntry(entry)));
+        if (lines.length === 0) {
+            return "";
+        }
+
+        return `${layer.injectHeading}\n${layer.injectIntro}\n${lines.join("\n")}`;
+    }).filter(Boolean).join("\n\n");
+}
+
+async function refreshKnowledgeInject() {
+    if (!ensureSettings().enabled) {
+        return;
+    }
+
+    const snapshot = buildKnowledgeSnapshot();
+    if (!snapshot) {
+        await flushKnowledgeInject();
+        return;
+    }
+
+    await getContext().executeSlashCommandsWithOptions(
+        `/inject id=${KNOWLEDGE_INJECT_ID} position=after ephemeral=true scan=true ${snapshot} |`,
+    );
+}
+
+async function flushKnowledgeInject() {
+    await getContext().executeSlashCommandsWithOptions(`/flushinject ${KNOWLEDGE_INJECT_ID} |`);
 }
 
 function readTimeline() {
@@ -2738,6 +2799,7 @@ function bindChatEvents() {
     eventSource.on(event_types.GENERATION_AFTER_COMMANDS, handleInjectsForGeneration);
     eventSource.on(event_types.GENERATION_ENDED, flushStateInject);
     eventSource.on(event_types.GENERATION_ENDED, flushTimelineInject);
+    eventSource.on(event_types.GENERATION_ENDED, flushKnowledgeInject);
 
     // Slot inputs show the current chat's state — without this they'd keep
     // displaying whatever chat was open when the panel was last rendered.
@@ -2993,6 +3055,10 @@ function buildSheetKnowledgePaneHtml() {
                 <label class="checkbox_label" for="psychograph_${key}_include_hidden">
                     <input id="psychograph_${key}_include_hidden" type="checkbox" />
                     ${layer.label}: include hidden messages
+                </label>
+                <label class="checkbox_label" for="psychograph_${key}_inject_enabled">
+                    <input id="psychograph_${key}_inject_enabled" type="checkbox" />
+                    ${layer.label}: inject into the prompt
                 </label>
                 <label for="psychograph_${key}_compaction_interval">${layer.label}: compact every N messages (0 = never)</label>
                 <input id="psychograph_${key}_compaction_interval" type="number" min="0" step="1" class="text_pole" />
