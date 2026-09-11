@@ -27,6 +27,29 @@
             <hr>
             <div class="inline-drawer">
                 <div class="inline-drawer-toggle inline-drawer-header">
+                    <span>Rerank &amp; Embeddings</span>
+                    <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
+                </div>
+                <div class="inline-drawer-content">
+                    <small>Called directly, not through SillyTavern &mdash; it has no route for either (its only vector endpoint stores collections and returns no scores). Generation keeps going through the connection profile above.</small>
+
+                    <label for="psychograph_similarity_base_url">Base URL</label>
+                    <input id="psychograph_similarity_base_url" type="text" class="text_pole" placeholder="http://localhost:8080" />
+                    <label for="psychograph_similarity_api_key">API Key</label>
+                    <input id="psychograph_similarity_api_key" type="password" class="text_pole" placeholder="leave empty if the server needs none" />
+                    <label for="psychograph_similarity_rerank_model">Rerank model</label>
+                    <input id="psychograph_similarity_rerank_model" type="text" class="text_pole" placeholder="model name the server expects" />
+                    <label for="psychograph_similarity_embedding_model">Embedding model</label>
+                    <input id="psychograph_similarity_embedding_model" type="text" class="text_pole" placeholder="model name the server expects" />
+
+                    <div id="psychograph_similarity_test" class="menu_button">Test both</div>
+                    <small id="psychograph_similarity_status"></small>
+                </div>
+            </div>
+
+            <hr>
+            <div class="inline-drawer">
+                <div class="inline-drawer-toggle inline-drawer-header">
                     <span>Lore / Graph</span>
                     <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
                 </div>
