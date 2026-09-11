@@ -2156,39 +2156,43 @@ async function absorbKnowledgeEntry(layer, profileId, candidate) {
     return "merged";
 }
 
-async function runKnowledgeCall(layer, profileId, prompt, maxTokens, label) {
-    const chatState = ensureChatState();
-
+// Split in two on purpose: asking the model is the slow half and has no
+// ordering constraint, while taking the answer in has one — a candidate has to
+// be scored against the list as it stands, including what a call that finished
+// a moment ago just added.
+async function askForKnowledgeEntries(layer, profileId, prompt, maxTokens, label) {
     try {
         const schema = buildKnowledgeSchema(layer, "One concise sentence covering all findings, before answering.");
         const result = await sendJsonSchemaRequest(profileId, `${layer.id}_${label}`, schema, prompt, maxTokens);
         console.log(`[Psychograph] ${layer.label} ${label} reasoning:`, result.reasoning);
 
-        const found = (Array.isArray(result.entries) ? result.entries : [])
+        return (Array.isArray(result.entries) ? result.entries : [])
             .map((entry) => readKnowledgeEntry(layer, entry))
             .filter(Boolean);
-        if (found.length === 0) {
-            return 0;
-        }
-        if (!isCurrentChatState(chatState)) {
-            console.warn(`[Psychograph] Chat changed during the ${layer.label} call, discarding the entries.`);
-            return 0;
-        }
-
-        let recorded = 0;
-        for (const candidate of found) {
-            if (!isCurrentChatState(chatState)) {
-                return recorded;
-            }
-            if (await absorbKnowledgeEntry(layer, profileId, candidate) !== "duplicate") {
-                recorded += 1;
-            }
-        }
-        return recorded;
     } catch (error) {
         console.error(`[Psychograph] ${layer.label} ${label} call failed:`, error);
-        return 0;
+        return [];
     }
+}
+
+async function absorbKnowledgeEntries(layer, profileId, candidates, chatState) {
+    let recorded = 0;
+    for (const candidate of candidates) {
+        if (!isCurrentChatState(chatState)) {
+            console.warn(`[Psychograph] Chat changed while taking in ${layer.label}, dropping what is left.`);
+            return recorded;
+        }
+        if (await absorbKnowledgeEntry(layer, profileId, candidate) !== "duplicate") {
+            recorded += 1;
+        }
+    }
+    return recorded;
+}
+
+async function runKnowledgeCall(layer, profileId, prompt, maxTokens, label) {
+    const chatState = ensureChatState();
+    const found = await askForKnowledgeEntries(layer, profileId, prompt, maxTokens, label);
+    return absorbKnowledgeEntries(layer, profileId, found, chatState);
 }
 
 function extractKnowledgeFromMessage(layer, profileId, message) {
@@ -2362,19 +2366,38 @@ async function buildKnowledge(layer) {
         chatState.knowledge[layer.id].seeded = true;
         added += await queueKnowledgeWork(layer, () => seedKnowledgeFromCard(layer, profileId));
 
-        for (let i = 0; i < messages.length; i++) {
+        // Asking is the slow half and nothing orders one message's question
+        // against another's, so a few run at once; taking the answers in stays
+        // strictly in order, which is what lets a later candidate see what an
+        // earlier one just added. Raise this on a backend with more slots.
+        const batchSize = 4;
+        for (let i = 0; i < messages.length; i += batchSize) {
             if (knowledgeBuildCancelled[layer.id]) {
                 break;
             }
             if (!isCurrentChatState(chatState)) {
-                console.warn(`[Psychograph] Chat changed during the ${layer.label} build, stopping.`);
+                console.warn(`[Psychograph] Chat changed during the ${layer.label} backfill, stopping.`);
                 break;
             }
 
-            knowledgeBuildStatus[layer.id] = `${layer.label} ${i + 1}/${messages.length}, ${added} found`;
+            const batch = messages.slice(i, i + batchSize);
+            knowledgeBuildStatus[layer.id] = `${layer.label} ${Math.min(i + batch.length, messages.length)}/${messages.length}, ${added} found`;
             renderKnowledgeBuildStatus();
-            added += await queueKnowledgeWork(layer, () => extractKnowledgeFromMessage(layer, profileId, messages[i]));
-            markKnowledgeExtracted(layer, messages[i]);
+
+            const answers = await Promise.all(batch.map((message) => askForKnowledgeEntries(
+                layer,
+                profileId,
+                layer.buildPrompt(renderKnowledgeForPrompt(layer), readMessageSpeaker(message), message.mes),
+                KNOWLEDGE_ENTRY_MAX_TOKENS,
+                "message",
+            )));
+
+            for (const candidates of answers) {
+                added += await queueKnowledgeWork(layer, () => absorbKnowledgeEntries(layer, profileId, candidates, chatState));
+            }
+            for (const message of batch) {
+                markKnowledgeExtracted(layer, message);
+            }
         }
 
         const summary = `${added} found, ${readKnowledgeEntries(layer).length} on the list.`;
