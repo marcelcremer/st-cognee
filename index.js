@@ -29,7 +29,6 @@ const AREA_GATE_MAX_TOKENS = 200;
 const TIMELINE_ENTRY_MAX_TOKENS = 300;
 const TIMELINE_KEEP_MAX_TOKENS = 200;
 const TRIGGER_MAP_MAX_TOKENS = 500;
-const TRIGGER_COMPACTION_MAX_TOKENS = 800;
 
 // Values a model reaches for when a slot holds nothing. Outside Clothes these
 // are an absence and must not reach the prompt; inside Clothes "none" is itself
@@ -594,11 +593,11 @@ function buildTriggerMapPrompt(currentMap, speaker, message) {
             heading: "## The test",
             content: `Imagine you're writing a character bible for a show's writers' room — the reference sheet that lists "whenever X happens, this character reliably does Y," so future episodes stay consistent. Would this excerpt earn an entry on that sheet?
 
-That means the excerpt must show (or state) a condition-response pair that would recur — not a one-off reaction to a unique situation. A single moment of sadness is not a trigger pattern. "Whenever she smells smoke, she goes quiet and won't answer" is.
+That means the excerpt must state that the pair recurs — with a word like "always", "every time" or "whenever", or as a conditioning that was deliberately established. A reaction the excerpt only shows happening once is not a trigger pattern, however strong that reaction is. A single moment of sadness is not one either. "Whenever she smells smoke, she goes quiet and won't answer" is.
 
 The excerpt may contain zero, one, or several such patterns — check for all of them, across all characters present.
 
-If the excerpt only shows a character reacting to something without implying the same reaction would happen again under the same condition, there is nothing to log for that character.`,
+If the excerpt only shows a character reacting to something, and does not say the same reaction happens whenever that condition occurs, there is nothing to log for that character.`,
         },
         {
             heading: "## Already known for these characters (do not duplicate)",
@@ -639,7 +638,7 @@ function buildTriggerSeedPrompt(name, profile, currentMap) {
             heading: "## The test",
             content: `Imagine you're writing a character bible for a show's writers' room — the reference sheet that lists "whenever X happens, this character reliably does Y," so every episode stays consistent. Which of those entries does this profile already give you?
 
-That means the profile must state a condition-response pair that holds whenever the condition occurs. A trait is not a pattern: "she is nervous around dogs" stays out. "Whenever she hears the word 'sleep', her eyes go glassy and she follows instructions" is one. A single event from the character's past is not one either, unless the profile says it still happens.
+That means the profile must state a condition-response pair that holds whenever the condition occurs, or a conditioning that was deliberately established. A trait is not a pattern: "she is nervous around dogs" stays out. "Whenever she hears the word 'sleep', her eyes go glassy and she follows instructions" is one. A single event from the character's past is not one either, unless the profile says it still happens.
 
 The profile may contain zero, one, or several such patterns — check for all of them.`,
         },
@@ -669,31 +668,45 @@ If nothing qualifies, use an empty array: {"reasoning": "...", "entries": []}`,
     ], `Profile of ${name}`, profile);
 }
 
-// PROVISIONAL WORDING. Compaction is the one call that rewrites entries that
-// already exist, so this text is a placeholder for one the user has tested
-// against their own model — see CLAUDE.md.
-function buildTriggerCompactionPrompt(currentMap) {
+// PROVISIONAL WORDING — a placeholder for one tested against the user's own
+// model, see CLAUDE.md. The numbering is not cosmetic: merged_from is what
+// lets applyTriggerCompaction() check that nothing was silently dropped.
+function buildTriggerCompactionPrompt(numberedMap) {
     return buildPromptDocument([
         {
             heading: "# Task Description",
-            content: "You will see a trigger map — the reference sheet of standing \"whenever X happens, this character reliably does Y\" patterns for the characters in a roleplay. Your job is to consolidate it, not to extend it.",
+            content: `You will see a numbered trigger map — the reference sheet of standing "whenever X happens, this character reliably does Y" patterns for the characters in a roleplay. Your job is to consolidate it, not to extend it.`,
         },
         {
             heading: "## The test",
             content: bulletList([
-                "Two entries belong together when they describe the same underlying pattern in different words, or when one is a narrower example of the other. Merge those into one entry whose trigger covers both and whose response states what reliably happens.",
-                "Keep entries separate when the trigger or the response differs in a way that would change how the character behaves.",
-                "Entries for different characters are never merged.",
-                "Never invent a pattern that is not in the map below, and never drop one without merging it into another.",
+                "Entries for the same character whose triggers describe the same condition belong in one entry. Its response must state everything the originals stated — join them, never pick one and drop the other.",
+                "Entries whose triggers describe different conditions stay separate, even when their responses are similar.",
+                "One entry may also absorb another when its trigger is the broader case of the other's, provided the merged response still covers both.",
+                "Nothing may be lost: every numbered entry below has to appear in the output, either on its own or folded into another.",
+                "Never invent a pattern that is not in the map below, and never merge across characters.",
                 "Reasoning is just for debug — one concise sentence is enough.",
             ]),
         },
         {
             heading: "## Output format",
             content: `Respond with ONLY a JSON object (no markdown code fence), containing the full consolidated map, using exactly this shape:
-{"reasoning": "...", "entries": [{"character": "...", "trigger": "...", "response": "..."}]}`,
+{"reasoning": "...", "entries": [{"character": "...", "trigger": "...", "response": "...", "merged_from": [1, 4]}]}
+
+"merged_from" lists the numbers of the entries below that went into that entry. Every number below must appear in exactly one "merged_from".`,
         },
-    ], "", currentMap);
+    ], "", numberedMap);
+}
+
+function buildTriggerCompactionSchema() {
+    const schema = buildTriggerEntriesSchema("One concise sentence on what was merged, before answering.");
+    schema.properties.entries.items.properties.merged_from = {
+        type: "array",
+        description: "The numbers of the input entries that went into this one.",
+        items: { type: "integer" },
+    };
+    schema.properties.entries.items.required.push("merged_from");
+    return schema;
 }
 
 function buildTriggerEntriesSchema(reasoningDescription) {
@@ -1678,6 +1691,14 @@ function renderTriggerMapForPrompt() {
         .join("\n\n");
 }
 
+// Flat and numbered rather than grouped: the numbers are what the model
+// references in merged_from, so they have to be unambiguous.
+function renderTriggerMapNumbered() {
+    return readTriggerEntries()
+        .map((entry, index) => `${index + 1}. ${entry.character} | ${entry.trigger} -> ${entry.response}`)
+        .join("\n");
+}
+
 // Same reasoning as the timeline queue: two runs appending to one map would
 // each be told the other's entry does not exist yet.
 let triggerWork = Promise.resolve();
@@ -1788,13 +1809,14 @@ async function compactTriggerMap(profileId) {
     }
 
     try {
-        const schema = buildTriggerEntriesSchema("One concise sentence on what was merged, before answering.");
         const result = await sendJsonSchemaRequest(
             profileId,
             "trigger_compaction",
-            schema,
-            buildTriggerCompactionPrompt(renderTriggerMapForPrompt()),
-            TRIGGER_COMPACTION_MAX_TOKENS,
+            buildTriggerCompactionSchema(),
+            buildTriggerCompactionPrompt(renderTriggerMapNumbered()),
+            // The answer carries the whole map, so the budget has to grow with it
+            // or the JSON is cut off mid-entry on a map of any size.
+            Math.max(600, before.length * 80),
         );
         console.log("[Psychograph] Trigger compaction reasoning:", result.reasoning);
 
@@ -1803,75 +1825,37 @@ async function compactTriggerMap(profileId) {
                 character: normalizeTriggerField(entry.character),
                 trigger: normalizeTriggerField(entry.trigger),
                 response: normalizeTriggerField(entry.response),
+                mergedFrom: (Array.isArray(entry.merged_from) ? entry.merged_from : [])
+                    .map((number) => Number(number))
+                    .filter((number) => Number.isInteger(number) && number >= 1 && number <= before.length),
             }))
             .filter((entry) => entry.character && entry.trigger && entry.response);
-        // A compaction that returns nothing usable would wipe the map, and this
-        // is the one call that rewrites entries rather than adding to them.
-        if (compacted.length === 0) {
-            console.warn("[Psychograph] Trigger compaction returned no usable entries, keeping the map as it was.");
+
+        const covered = new Set(compacted.flatMap((entry) => entry.mergedFrom));
+        // No usable bookkeeping at all means the model ignored the format, and
+        // its output cannot be trusted to have kept anything — whereas a few
+        // missing numbers is a normal miss worth repairing. This is the one
+        // call that rewrites existing entries, so the difference matters.
+        if (compacted.length === 0 || covered.size === 0) {
+            console.warn("[Psychograph] Trigger compaction came back unusable, keeping the map as it was.");
             return false;
         }
         if (!isCurrentChatState(chatState)) {
             return false;
         }
 
-        writeTriggerEntries(compacted);
-        console.log(`[Psychograph] Trigger map compacted from ${before.length} to ${compacted.length} entries.`);
+        const dropped = before.filter((_, index) => !covered.has(index + 1));
+        if (dropped.length > 0) {
+            console.warn("[Psychograph] Trigger compaction left entries unaccounted for, keeping them unchanged:", dropped);
+        }
+
+        const merged = compacted.map(({ character, trigger, response }) => ({ character, trigger, response }));
+        writeTriggerEntries([...merged, ...dropped]);
+        console.log(`[Psychograph] Trigger map compacted from ${before.length} to ${readTriggerEntries().length} entries.`);
         return true;
     } catch (error) {
         console.error("[Psychograph] Trigger compaction failed:", error);
         return false;
-    }
-}
-
-async function extractTriggersForNewMessage(settings, profileId) {
-    if (!settings.triggers.autoExtract) {
-        return;
-    }
-
-    const message = getContext().chat.at(-2);
-    if (!isTimelineMessage(message, settings.triggers.includeHidden) || isTriggersExtracted(message)) {
-        return;
-    }
-    markTriggersExtracted(message);
-
-    await queueTriggerWork(async () => {
-        await extractTriggersForMessage(profileId, message);
-
-        const chatState = ensureChatState();
-        const interval = Number(settings.triggers.compactionInterval) || 0;
-        chatState.triggerMap.sinceCompaction += 1;
-        if (interval > 0 && chatState.triggerMap.sinceCompaction >= interval) {
-            chatState.triggerMap.sinceCompaction = 0;
-            await compactTriggerMap(profileId);
-        }
-        getContext().saveMetadataDebounced();
-    });
-}
-
-async function rerunTriggerExtractionNow() {
-    const settings = ensureSettings();
-    if (!settings.connectionProfile) {
-        toastr.warning(NO_PROFILE_WARNING, "Psychograph");
-        return;
-    }
-
-    const message = getContext().chat.at(-1);
-    if (!isTimelineMessage(message, settings.triggers.includeHidden)) {
-        toastr.warning("The last message is a system or hidden message, nothing to analyze.", "Psychograph");
-        return;
-    }
-
-    toastr.info("Checking the last message for trigger patterns…", "Psychograph");
-    captureUndoSnapshot("the trigger extraction");
-    const added = await queueTriggerWork(() => extractTriggersForMessage(settings.connectionProfile, message));
-    markTriggersExtracted(message);
-    noteLastExtraction(message, "triggers");
-
-    if (added > 0) {
-        toastr.success(`${added} new ${added === 1 ? "pattern" : "patterns"} on the trigger map.`, "Psychograph");
-    } else {
-        toastr.info("No standing pattern in that message.", "Psychograph");
     }
 }
 
@@ -2555,11 +2539,9 @@ function buildSheetAreaPaneHtml(areaKey) {
                     Enabled
                 </label>
                 <span class="psychograph-sheet-count">${config.slots.length} fields</span>
-                <div class="psychograph-sheet-options-toggle fa-solid fa-gear interactable" data-tab="${areaKey}" title="Options" tabindex="0"></div>
             </div>
-            <div class="psychograph-sheet-options" data-tab="${areaKey}">
-                <div id="psychograph_sheet_init_${config.id}" class="menu_button">Init from description</div>
-                <small>Fills the slots from the character card instead of from the chat.</small>
+            <div class="psychograph-sheet-actions">
+                <div id="psychograph_sheet_init_${config.id}" class="menu_button" title="Fill the slots from the character card instead of from the chat">Init from description</div>
             </div>
             <div class="psychograph-sheet-fields">${fields}</div>
         </div>
@@ -2575,27 +2557,24 @@ function buildSheetTimelinePaneHtml() {
                     Enabled
                 </label>
                 <span id="psychograph_sheet_timeline_count" class="psychograph-sheet-count"></span>
-                <div class="psychograph-sheet-options-toggle fa-solid fa-gear interactable" data-tab="${SHEET_TIMELINE_TAB}" title="Options" tabindex="0"></div>
+                <div class="psychograph-sheet-options-toggle fa-solid fa-gear interactable" data-tab="${SHEET_TIMELINE_TAB}" title="Settings" tabindex="0"></div>
             </div>
+            <div class="psychograph-sheet-actions">
+                <div id="psychograph_timeline_build" class="menu_button">Build timeline</div>
+                <div id="psychograph_timeline_clear" class="menu_button">Clear</div>
+            </div>
+            <small id="psychograph_timeline_status" class="psychograph-sheet-hint"></small>
             <div class="psychograph-sheet-options" data-tab="${SHEET_TIMELINE_TAB}">
                 <label class="checkbox_label" for="psychograph_timeline_include_hidden">
                     <input id="psychograph_timeline_include_hidden" type="checkbox" />
                     Include hidden messages
                 </label>
-                <small>Hiding a message keeps it out of the model's context, not out of the story.</small>
-
                 <label class="checkbox_label" for="psychograph_timeline_inject_enabled">
                     <input id="psychograph_timeline_inject_enabled" type="checkbox" />
                     Inject into the prompt
                 </label>
                 <label for="psychograph_timeline_inject_limit">Most recent entries only (0 = all)</label>
                 <input id="psychograph_timeline_inject_limit" type="number" min="0" step="1" class="text_pole" />
-
-                <div class="flex-container">
-                    <div id="psychograph_timeline_build" class="menu_button">Build timeline</div>
-                    <div id="psychograph_timeline_clear" class="menu_button">Clear</div>
-                </div>
-                <small id="psychograph_timeline_status"></small>
             </div>
             <div class="psychograph-sheet-fields">
                 <label for="psychograph_timeline">Current timeline</label>
@@ -2614,8 +2593,14 @@ function buildSheetTriggersPaneHtml() {
                     Enabled
                 </label>
                 <span id="psychograph_sheet_triggers_count" class="psychograph-sheet-count"></span>
-                <div class="psychograph-sheet-options-toggle fa-solid fa-gear interactable" data-tab="${SHEET_TRIGGERS_TAB}" title="Options" tabindex="0"></div>
+                <div class="psychograph-sheet-options-toggle fa-solid fa-gear interactable" data-tab="${SHEET_TRIGGERS_TAB}" title="Settings" tabindex="0"></div>
             </div>
+            <div class="psychograph-sheet-actions">
+                <div id="psychograph_triggers_build" class="menu_button">Build map</div>
+                <div id="psychograph_triggers_seed" class="menu_button" title="Read the character description and persona for standing patterns">Init from description</div>
+                <div id="psychograph_triggers_compact" class="menu_button" title="Merge entries that describe the same pattern">Compact</div>
+            </div>
+            <small id="psychograph_triggers_status" class="psychograph-sheet-hint"></small>
             <div class="psychograph-sheet-options" data-tab="${SHEET_TRIGGERS_TAB}">
                 <label class="checkbox_label" for="psychograph_triggers_include_hidden">
                     <input id="psychograph_triggers_include_hidden" type="checkbox" />
@@ -2623,14 +2608,6 @@ function buildSheetTriggersPaneHtml() {
                 </label>
                 <label for="psychograph_triggers_compaction_interval">Compact every N messages (0 = never)</label>
                 <input id="psychograph_triggers_compaction_interval" type="number" min="0" step="1" class="text_pole" />
-                <div class="flex-container">
-                    <div id="psychograph_triggers_build" class="menu_button">Build trigger map</div>
-                    <div id="psychograph_triggers_seed" class="menu_button">Init from description</div>
-                    <div id="psychograph_triggers_compact" class="menu_button">Compact now</div>
-                    <div id="psychograph_triggers_add" class="menu_button">Add entry</div>
-                </div>
-                <small id="psychograph_triggers_status"></small>
-                <small>Compaction merges entries that describe the same pattern. It is the only call that rewrites what is already on the map, so it snapshots first.</small>
             </div>
             <table class="psychograph-trigger-table">
                 <thead>
@@ -2639,6 +2616,9 @@ function buildSheetTriggersPaneHtml() {
                 <tbody id="psychograph_trigger_rows"></tbody>
             </table>
             <div id="psychograph_trigger_empty" class="psychograph-sheet-hint">Nothing on the map yet.</div>
+            <div id="psychograph_trigger_add" class="psychograph-trigger-add interactable" title="Add an empty row" tabindex="0">
+                <i class="fa-solid fa-plus"></i> Add row
+            </div>
         </div>
     `;
 }
@@ -2831,8 +2811,9 @@ function bindSheetEvents() {
     $("#psychograph_triggers_seed").on("click", seedTriggersFromCardNow);
     $("#psychograph_triggers_compact").on("click", compactTriggerMapNow);
 
-    $("#psychograph_triggers_add").on("click", function () {
-        writeTriggerEntries([...readTriggerEntries(), { character: readTargetName(), trigger: "", response: "" }]);
+    $("#psychograph_trigger_add").on("click", function () {
+        writeTriggerEntries([...readTriggerEntries(), { character: "", trigger: "", response: "" }]);
+        $("#psychograph_trigger_rows tr:last-child .psychograph-trigger-input").first().trigger("focus");
     });
 
     // Delegated, so a re-render doesn't have to rebind every row.

@@ -185,6 +185,21 @@
     white-space: nowrap;
 }
 
+/* Actions stay on the surface; only switches live behind the gear. Hiding the
+   buttons there meant hunting for them on every use. */
+.psychograph-sheet-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+}
+
+.psychograph-sheet-actions .menu_button {
+    white-space: nowrap;
+    padding: 4px 8px;
+    margin: 0;
+    flex: 1;
+}
+
 .psychograph-sheet-options-toggle {
     cursor: pointer;
     opacity: 0.7;
@@ -332,4 +347,22 @@
 
 #psychograph_trigger_empty.shown {
     display: block;
+}
+
+.psychograph-trigger-add {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.4em;
+    margin-top: 2px;
+    padding: 4px;
+    font-size: 0.85em;
+    cursor: pointer;
+    opacity: 0.6;
+    border: 1px dashed var(--SmartThemeBorderColor, var(--SmartThemeBodyColor));
+    border-radius: 4px;
+}
+
+.psychograph-trigger-add:hover {
+    opacity: 1;
 }
