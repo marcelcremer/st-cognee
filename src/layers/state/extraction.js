@@ -1,7 +1,7 @@
 import { getContext } from "../../sillytavern.js";
 import { ensureChatState, isCurrentChatState } from "../../chat-state.js";
 import { MESSAGE_MODE, SEED_MODE } from "../../constants.js";
-import { refreshStateInject } from "../../injects.js";
+import { refreshContextInject } from "../../injects.js";
 import { NO_PROFILE_WARNING, sendJsonSchemaRequest, warnOnce } from "../../llm/request.js";
 import { isStateExtracted, isStoryMessage, markStateExtracted, readMessageSpeaker } from "../../messages.js";
 import { buildAreaDiffPrompt, buildAreaDiffSchema, buildAreaGatePrompt, buildAreaGateSchema, buildAreaSlotUpdatePrompt, buildAreaSlotUpdateSchema } from "../../prompts/state.js";
@@ -162,7 +162,7 @@ export async function extractStateForNewMessage(settings, profileId) {
         noteLastExtraction(message, "state");
         const gatedAreaKeys = await runAreaGate(profileId, eligibleAreaKeys, message.mes, speaker);
         await Promise.all(gatedAreaKeys.map((areaKey) => runAreaExtraction(areaKey, message.mes, speaker)));
-        await refreshStateInject();
+        await refreshContextInject();
     });
 }
 

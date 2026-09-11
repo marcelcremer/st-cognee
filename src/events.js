@@ -1,5 +1,5 @@
 import { eventSource, event_types, getContext } from "./sillytavern.js";
-import { flushCogneeRecallInject, flushKnowledgeInject, flushMotivationInject, flushStateInject, flushTimelineInject, handleCogneeRecall, handleInjectsForGeneration } from "./injects.js";
+import { flushCogneeRecallInject, flushContextInject, flushLegacyInjects, flushMotivationInject, handleCogneeRecall, handleInjectsForGeneration } from "./injects.js";
 import { handleCogneeIngestion } from "./layers/cognee.js";
 import { extractKnowledgeForNewMessage } from "./layers/knowledge/extraction.js";
 import { KNOWLEDGE_KEYS, KNOWLEDGE_LAYERS } from "./layers/knowledge/layers.js";
@@ -65,10 +65,9 @@ export function bindChatEvents() {
     eventSource.on(event_types.GENERATION_ENDED, flushCogneeRecallInject);
 
     eventSource.on(event_types.GENERATION_AFTER_COMMANDS, handleInjectsForGeneration);
-    eventSource.on(event_types.GENERATION_ENDED, flushStateInject);
-    eventSource.on(event_types.GENERATION_ENDED, flushTimelineInject);
-    eventSource.on(event_types.GENERATION_ENDED, flushKnowledgeInject);
+    eventSource.on(event_types.GENERATION_ENDED, flushContextInject);
     eventSource.on(event_types.GENERATION_ENDED, flushMotivationInject);
+    eventSource.on(event_types.CHAT_CHANGED, flushLegacyInjects);
 
     eventSource.on(event_types.MESSAGE_RECEIVED, handleMotivationRecord);
 
