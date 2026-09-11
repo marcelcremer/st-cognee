@@ -113,6 +113,7 @@
 
 .psychograph-sheet-tabs {
     display: flex;
+    flex-wrap: wrap;
     gap: 2px;
     border-bottom: 1px solid var(--SmartThemeBorderColor, var(--SmartThemeBodyColor));
 }
@@ -271,18 +272,18 @@
 
 /* Trigger map. SillyTavern has no table styling of its own (its one table
    class is unused and breaks words mid-word), so the sheet brings its own. */
-.psychograph-trigger-table {
+.psychograph-knowledge-table {
     display: none;
     width: 100%;
     border-collapse: collapse;
     table-layout: fixed;
 }
 
-.psychograph-trigger-table.shown {
+.psychograph-knowledge-table.shown {
     display: table;
 }
 
-.psychograph-trigger-table th {
+.psychograph-knowledge-table th {
     padding: 2px 4px;
     font-size: 0.75em;
     font-weight: normal;
@@ -292,24 +293,20 @@
     border-bottom: 1px solid var(--SmartThemeBorderColor, var(--SmartThemeBodyColor));
 }
 
-.psychograph-trigger-table th:nth-child(1) {
-    width: 24%;
+.psychograph-knowledge-table th:first-child {
+    width: 26%;
 }
 
-.psychograph-trigger-table th:nth-child(2) {
-    width: 32%;
-}
-
-.psychograph-trigger-table th:nth-child(4) {
+.psychograph-knowledge-table th:nth-child(4) {
     width: 1.6em;
 }
 
-.psychograph-trigger-table td {
+.psychograph-knowledge-table td {
     padding: 1px;
     vertical-align: top;
 }
 
-.psychograph-trigger-input {
+.psychograph-knowledge-input {
     width: 100%;
     box-sizing: border-box;
     padding: 3px 4px;
@@ -321,35 +318,35 @@
     outline: none;
 }
 
-.psychograph-trigger-input:hover {
+.psychograph-knowledge-input:hover {
     border-color: var(--SmartThemeBorderColor, var(--SmartThemeBodyColor));
 }
 
-.psychograph-trigger-input:focus {
+.psychograph-knowledge-input:focus {
     border-color: var(--SmartThemeQuoteColor, var(--SmartThemeBodyColor));
     background-color: var(--black30a, rgba(0, 0, 0, 0.3));
 }
 
-.psychograph-trigger-delete {
+.psychograph-knowledge-delete {
     padding: 3px;
     cursor: pointer;
     opacity: 0.4;
 }
 
-.psychograph-trigger-delete:hover {
+.psychograph-knowledge-delete:hover {
     opacity: 1;
 }
 
-#psychograph_trigger_empty {
+.psychograph-sheet-pane .psychograph-sheet-hint[id$="_empty"] {
     display: none;
     padding: 6px 2px;
 }
 
-#psychograph_trigger_empty.shown {
+.psychograph-sheet-pane .psychograph-sheet-hint[id$="_empty"].shown {
     display: block;
 }
 
-.psychograph-trigger-add {
+.psychograph-knowledge-add {
     display: flex;
     align-items: center;
     justify-content: center;
@@ -363,6 +360,6 @@
     border-radius: 4px;
 }
 
-.psychograph-trigger-add:hover {
+.psychograph-knowledge-add:hover {
     opacity: 1;
 }

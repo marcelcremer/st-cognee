@@ -28,7 +28,6 @@ const AREA_SLOT_UPDATE_MAX_TOKENS = 200;
 const AREA_GATE_MAX_TOKENS = 200;
 const TIMELINE_ENTRY_MAX_TOKENS = 300;
 const TIMELINE_KEEP_MAX_TOKENS = 200;
-const TRIGGER_MAP_MAX_TOKENS = 500;
 
 // Values a model reaches for when a slot holds nothing. Outside Clothes these
 // are an absence and must not reach the prompt; inside Clothes "none" is itself
@@ -577,8 +576,6 @@ function buildTimelineKeepSchema() {
     };
 }
 
-const TRIGGER_MAP_EMPTY_PLACEHOLDER = "Nothing known yet.";
-
 // Under evaluation against the user's own model — see CLAUDE.md before
 // touching any of this wording.
 function buildTriggerMapPrompt(currentMap, speaker, message) {
@@ -698,35 +695,316 @@ function buildTriggerCompactionPrompt(numberedMap) {
     ], "", numberedMap);
 }
 
-function buildTriggerCompactionSchema() {
-    const schema = buildTriggerEntriesSchema("One concise sentence on what was merged, before answering.");
-    schema.properties.entries.items.properties.merged_from = {
-        type: "array",
-        description: "The numbers of the input entries that went into this one.",
-        items: { type: "integer" },
-    };
-    schema.properties.entries.items.required.push("merged_from");
-    return schema;
+// --- Facts -------------------------------------------------------------
+// PROVISIONAL WORDING, not yet tested against the user's model.
+
+function buildFactPrompt(currentMap, speaker, message) {
+    const context = getContext();
+
+    return buildPromptDocument([
+        {
+            heading: "# Task Description",
+            content: `Your job is to check a recent excerpt of the roleplay between ${context.name1} and ${context.name2} for facts worth keeping, and to write them down if any exist. You are NOT continuing the roleplay, judging the content, or writing dialogue.`,
+        },
+        {
+            heading: "## The test",
+            content: `A fact is something that would still be true next week no matter what happens in the scene: who someone is related to, who they work for, where they come from, what they own, what they are called.
+
+What someone is doing, feeling, wearing or where they are standing right now is not a fact — that is the current situation and it is tracked elsewhere. Neither is something that merely happened; the event belongs elsewhere, only its lasting result is a fact. "Kim quit the clinic" is an event. "Kim no longer works at the clinic" is a fact.
+
+The excerpt may contain zero, one, or several facts — check for all of them, about anyone mentioned.`,
+        },
+        {
+            heading: "## Already known (do not duplicate)",
+            content: `${currentMap}
+
+Skip anything the list above already states, even in different words. Only write a fact down if it is genuinely new.`,
+        },
+        {
+            heading: "## Writing an entry",
+            content: bulletList([
+                "Resolve pronouns and nicknames to actual character names.",
+                `Write it as three parts: "subject", "relation", "object" — for example subject "Jake", relation "is cousin of", object "Kim Bauer".`,
+                "The subject is whoever the fact is about, in the direction the excerpt states it.",
+                `Keep the relation short and lowercase, in the present tense: "works at", "is cousin of", "lives in".`,
+                "Do not infer a fact that the excerpt does not state.",
+                "Reasoning is just for debug — one concise sentence is enough, covering all findings.",
+            ]),
+        },
+        {
+            heading: "## Output format",
+            content: `Respond with ONLY a JSON object (no markdown code fence), using exactly this shape:
+{"reasoning": "...", "entries": [{"subject": "...", "relation": "...", "object": "..."}]}
+
+If nothing qualifies, use an empty array: {"reasoning": "...", "entries": []}`,
+        },
+    ], speaker, message);
 }
 
-function buildTriggerEntriesSchema(reasoningDescription) {
+function buildFactSeedPrompt(name, profile, currentMap) {
+    return buildPromptDocument([
+        {
+            heading: "# Task Description",
+            content: "Your job is to read a character profile and write down the facts it establishes, so they are known before the roleplay starts. You are NOT continuing the roleplay, judging the content, or writing dialogue.",
+        },
+        {
+            heading: "## The test",
+            content: `A fact is something that would still be true next week no matter what happens in the story: who someone is related to, who they work for, where they come from, what they own, what they are called.
+
+What the character is *like* is not a fact — temperament, habits, looks and skills are the profile's own job and stay there. Neither is a single event from their past; only its lasting result is a fact.
+
+The profile may contain zero, one, or several facts — check for all of them, about anyone it mentions.`,
+        },
+        {
+            heading: "## Already known (do not duplicate)",
+            content: `${currentMap}
+
+Skip anything the list above already states, even in different words. Only write a fact down if it is genuinely new.`,
+        },
+        {
+            heading: "## Writing an entry",
+            content: bulletList([
+                "Resolve pronouns and nicknames to actual character names.",
+                `Write it as three parts: "subject", "relation", "object" — for example subject "Jake", relation "is cousin of", object "Kim Bauer".`,
+                "The subject is whoever the fact is about, in the direction the profile states it.",
+                `Keep the relation short and lowercase, in the present tense: "works at", "is cousin of", "lives in".`,
+                "Do not infer a fact that the profile does not state.",
+                "Reasoning is just for debug — one concise sentence is enough, covering all findings.",
+            ]),
+        },
+        {
+            heading: "## Output format",
+            content: `Respond with ONLY a JSON object (no markdown code fence), using exactly this shape:
+{"reasoning": "...", "entries": [{"subject": "...", "relation": "...", "object": "..."}]}
+
+If nothing qualifies, use an empty array: {"reasoning": "...", "entries": []}`,
+        },
+    ], `Profile of ${name}`, profile);
+}
+
+function buildFactCompactionPrompt(numberedMap) {
+    return buildPromptDocument([
+        {
+            heading: "# Task Description",
+            content: "You will see a numbered list of facts about the people in a roleplay. Your job is to consolidate it, not to extend it.",
+        },
+        {
+            heading: "## The test",
+            content: bulletList([
+                "Two entries belong together when they state the same fact in different words. Merge those into one entry that states everything both stated.",
+                "Entries about different subjects, or about different relations, stay separate.",
+                "When two entries contradict each other, keep the one the later number states — a fact stated later replaces the same fact stated earlier.",
+                "Nothing may be lost: every numbered entry below has to appear in the output, either on its own or folded into another.",
+                "Never invent a fact that is not in the list below.",
+                "Reasoning is just for debug — one concise sentence is enough.",
+            ]),
+        },
+        {
+            heading: "## Output format",
+            content: `Respond with ONLY a JSON object (no markdown code fence), containing the full consolidated list, using exactly this shape:
+{"reasoning": "...", "entries": [{"subject": "...", "relation": "...", "object": "...", "merged_from": [1, 4]}]}
+
+"merged_from" lists the numbers of the entries below that went into that entry. Every number below must appear in exactly one "merged_from".`,
+        },
+    ], "", numberedMap);
+}
+
+// --- Dispositions ------------------------------------------------------
+// PROVISIONAL WORDING, not yet tested against the user's model.
+
+function buildDispositionPrompt(currentMap, speaker, message) {
+    const context = getContext();
+
+    return buildPromptDocument([
+        {
+            heading: "# Task Description",
+            content: `Your job is to check a recent excerpt of the roleplay between ${context.name1} and ${context.name2} for lasting dispositions — what a character has come to feel, believe or expect — and to write them down if any exist. You are NOT continuing the roleplay, judging the content, or writing dialogue.`,
+        },
+        {
+            heading: "## The test",
+            content: `A disposition colours how a character behaves from now on, in situations the excerpt does not even mention: what they have stopped trusting, what they want, what they cannot stand, what a person or a subject has come to mean to them.
+
+It is not a compulsion. The character can act against a disposition if they choose to — that is what separates it from an automatic reaction they have no say in.
+
+A passing mood is not a disposition. Being annoyed right now is not one; having come to resent someone is.
+
+The excerpt may contain zero, one, or several — check for all of them, across all characters present.`,
+        },
+        {
+            heading: "## Already known for these characters (do not duplicate)",
+            content: `${currentMap}
+
+Skip anything the list above already states, even in different words. Only write a disposition down if it is genuinely new, or if the excerpt changes one that is listed.`,
+        },
+        {
+            heading: "## Writing an entry",
+            content: bulletList([
+                "Resolve pronouns and nicknames to actual character names.",
+                `"disposition" is one short sentence in the present tense, stating what now holds for that character — "has stopped trusting Jacob", "dislikes being called Kimmy".`,
+                "If the excerpt states what caused it, include it briefly only if stated — don't infer a cause that isn't in the text.",
+                "No editorializing about how significant or surprising it is.",
+                "Reasoning is just for debug — one concise sentence is enough, covering all findings.",
+            ]),
+        },
+        {
+            heading: "## Output format",
+            content: `Respond with ONLY a JSON object (no markdown code fence), using exactly this shape:
+{"reasoning": "...", "entries": [{"character": "...", "disposition": "..."}]}
+
+If nothing qualifies, use an empty array: {"reasoning": "...", "entries": []}`,
+        },
+    ], speaker, message);
+}
+
+function buildDispositionSeedPrompt(name, profile, currentMap) {
+    return buildPromptDocument([
+        {
+            heading: "# Task Description",
+            content: "Your job is to read a character profile and write down the lasting dispositions it establishes — what the character feels, believes or expects going into the story. You are NOT continuing the roleplay, judging the content, or writing dialogue.",
+        },
+        {
+            heading: "## The test",
+            content: `A disposition colours how the character behaves in situations the profile does not even mention: what they have stopped trusting, what they want, what they cannot stand, what a person or a subject has come to mean to them.
+
+It is not a compulsion. The character can act against a disposition if they choose to — that is what separates it from an automatic reaction they have no say in.
+
+A skill or a habit is not a disposition, and neither is what the character looks like.
+
+The profile may contain zero, one, or several — check for all of them.`,
+        },
+        {
+            heading: "## Already known for these characters (do not duplicate)",
+            content: `${currentMap}
+
+Skip anything the list above already states, even in different words. Only write a disposition down if it is genuinely new.`,
+        },
+        {
+            heading: "## Writing an entry",
+            content: bulletList([
+                "Resolve pronouns and nicknames to actual character names.",
+                `"disposition" is one short sentence in the present tense, stating what holds for that character — "distrusts anyone in uniform", "wants out of the city".`,
+                "If the profile states what caused it, include it briefly only if stated — don't infer a cause that isn't in the text.",
+                "No editorializing about how significant or surprising it is.",
+                "Reasoning is just for debug — one concise sentence is enough, covering all findings.",
+            ]),
+        },
+        {
+            heading: "## Output format",
+            content: `Respond with ONLY a JSON object (no markdown code fence), using exactly this shape:
+{"reasoning": "...", "entries": [{"character": "...", "disposition": "..."}]}
+
+If nothing qualifies, use an empty array: {"reasoning": "...", "entries": []}`,
+        },
+    ], `Profile of ${name}`, profile);
+}
+
+function buildDispositionCompactionPrompt(numberedMap) {
+    return buildPromptDocument([
+        {
+            heading: "# Task Description",
+            content: "You will see a numbered list of the lasting dispositions of the characters in a roleplay. Your job is to consolidate it, not to extend it.",
+        },
+        {
+            heading: "## The test",
+            content: bulletList([
+                "Entries for the same character that describe the same disposition in different words belong in one entry, which must state everything the originals stated.",
+                "Entries that describe different dispositions stay separate, even when they are about the same person or subject.",
+                "When a later entry supersedes an earlier one for the same character, keep what holds now.",
+                "Nothing may be lost: every numbered entry below has to appear in the output, either on its own or folded into another.",
+                "Never invent a disposition that is not in the list below, and never merge across characters.",
+                "Reasoning is just for debug — one concise sentence is enough.",
+            ]),
+        },
+        {
+            heading: "## Output format",
+            content: `Respond with ONLY a JSON object (no markdown code fence), containing the full consolidated list, using exactly this shape:
+{"reasoning": "...", "entries": [{"character": "...", "disposition": "...", "merged_from": [1, 4]}]}
+
+"merged_from" lists the numbers of the entries below that went into that entry. Every number below must appear in exactly one "merged_from".`,
+        },
+    ], "", numberedMap);
+}
+
+// The three layers are one machine with three configurations: same table, same
+// backfill, same compaction, same repair. What is deliberately NOT shared is
+// the model call — a 4B asked for three kinds at once gets less reliable, and
+// a truncated mixed array drops whichever kind came last without looking like
+// a failure.
+const KNOWLEDGE_LAYERS = {
+    facts: {
+        id: "facts",
+        label: "Facts",
+        fields: ["subject", "relation", "object"],
+        fieldDescriptions: {
+            subject: "Whoever or whatever the fact is about, by name.",
+            relation: "The relation, short, lowercase and in the present tense.",
+            object: "The other side of the relation.",
+        },
+        emptyPlaceholder: "Nothing known yet.",
+        groupBy: null,
+        renderEntry: (entry) => `${entry.subject} | ${entry.relation} | ${entry.object}`,
+        buildPrompt: buildFactPrompt,
+        buildSeedPrompt: buildFactSeedPrompt,
+        buildCompactionPrompt: buildFactCompactionPrompt,
+    },
+    dispositions: {
+        id: "dispositions",
+        label: "Dispositions",
+        fields: ["character", "disposition"],
+        fieldDescriptions: {
+            character: "The character the disposition belongs to, by name.",
+            disposition: "One short sentence stating what now holds for them.",
+        },
+        emptyPlaceholder: "Nothing known yet.",
+        groupBy: "character",
+        renderEntry: (entry) => entry.disposition,
+        buildPrompt: buildDispositionPrompt,
+        buildSeedPrompt: buildDispositionSeedPrompt,
+        buildCompactionPrompt: buildDispositionCompactionPrompt,
+    },
+    triggers: {
+        id: "triggers",
+        label: "Triggers",
+        fields: ["character", "trigger", "response"],
+        fieldDescriptions: {
+            character: "The character the pattern belongs to, by name.",
+            trigger: "The condition that sets the pattern off.",
+            response: "What reliably happens when it does.",
+        },
+        emptyPlaceholder: "Nothing known yet.",
+        groupBy: "character",
+        renderEntry: (entry) => `${entry.trigger} -> ${entry.response}`,
+        buildPrompt: buildTriggerMapPrompt,
+        buildSeedPrompt: buildTriggerSeedPrompt,
+        buildCompactionPrompt: buildTriggerCompactionPrompt,
+    },
+};
+
+const KNOWLEDGE_KEYS = Object.keys(KNOWLEDGE_LAYERS);
+
+function buildKnowledgeSchema(layer, reasoningDescription, { withMergedFrom = false } = {}) {
+    const properties = Object.fromEntries(
+        layer.fields.map((field) => [field, { type: "string", description: layer.fieldDescriptions[field] }]),
+    );
+    const required = [...layer.fields];
+
+    if (withMergedFrom) {
+        properties.merged_from = {
+            type: "array",
+            description: "The numbers of the input entries that went into this one.",
+            items: { type: "integer" },
+        };
+        required.push("merged_from");
+    }
+
     return {
         type: "object",
         properties: {
             reasoning: { type: "string", description: reasoningDescription },
             entries: {
                 type: "array",
-                description: "One object per pattern. An empty array when there is nothing to record.",
-                items: {
-                    type: "object",
-                    properties: {
-                        character: { type: "string", description: "The character the pattern belongs to, by name." },
-                        trigger: { type: "string", description: "The condition that sets the pattern off." },
-                        response: { type: "string", description: "What reliably happens when it does." },
-                    },
-                    required: ["character", "trigger", "response"],
-                    additionalProperties: false,
-                },
+                description: "One object per entry. An empty array when there is nothing to record.",
+                items: { type: "object", properties, required, additionalProperties: false },
             },
         },
         required: ["reasoning", "entries"],
@@ -746,11 +1024,11 @@ const defaultSettings = {
     state: {
         areas: Object.fromEntries(STATE_AREAS.map(({ key }) => [key, { enabled: true }])),
     },
-    triggers: {
+    knowledge: Object.fromEntries(KNOWLEDGE_KEYS.map((key) => [key, {
         autoExtract: true,
         includeHidden: true,
         compactionInterval: 10,
-    },
+    }])),
     timeline: {
         autoExtract: true,
         includeHidden: true,
@@ -819,7 +1097,7 @@ function markStateExtracted(message) {
 // "Restore previous" undoes is everything the last run changed, which is how
 // it reads on the sheet. Restoring swaps rather than drops the snapshot, so a
 // restore can be taken back too.
-const UNDO_KEYS = ["areas", "timeline", "triggerMap"];
+const UNDO_KEYS = ["areas", "timeline", "knowledge"];
 
 function captureUndoSnapshot(label) {
     const chatState = ensureChatState();
@@ -876,7 +1154,16 @@ function ensureSettings() {
     const settings = extension_settings[extensionName];
     settings.cognee = Object.assign(structuredClone(defaultSettings.cognee), settings.cognee);
     settings.timeline = Object.assign(structuredClone(defaultSettings.timeline), settings.timeline);
-    settings.triggers = Object.assign(structuredClone(defaultSettings.triggers), settings.triggers);
+    settings.knowledge = settings.knowledge || {};
+    for (const key of KNOWLEDGE_KEYS) {
+        settings.knowledge[key] = Object.assign(
+            structuredClone(defaultSettings.knowledge[key]),
+            // The trigger layer predates the other two and had settings of its own.
+            key === "triggers" ? settings.triggers : undefined,
+            settings.knowledge[key],
+        );
+    }
+    delete settings.triggers;
     settings.state = settings.state || {};
     settings.state.areas = settings.state.areas || {};
     for (const { key } of STATE_AREAS) {
@@ -925,9 +1212,16 @@ function ensureChatState() {
     if (chatState.timeline === undefined) {
         chatState.timeline = "";
     }
-    chatState.triggerMap = chatState.triggerMap || {};
-    chatState.triggerMap.entries = chatState.triggerMap.entries || [];
-    chatState.triggerMap.sinceCompaction = chatState.triggerMap.sinceCompaction || 0;
+    chatState.knowledge = chatState.knowledge || {};
+    for (const key of KNOWLEDGE_KEYS) {
+        // Chats written before the other two layers existed carry the trigger
+        // list under its own key; this is the only copy of it.
+        const legacy = key === "triggers" ? chatState.triggerMap : null;
+        chatState.knowledge[key] = chatState.knowledge[key] || legacy || {};
+        chatState.knowledge[key].entries = chatState.knowledge[key].entries || [];
+        chatState.knowledge[key].sinceCompaction = chatState.knowledge[key].sinceCompaction || 0;
+    }
+    delete chatState.triggerMap;
 
     return chatState;
 }
@@ -1031,9 +1325,11 @@ function renderSettings() {
     $("#psychograph_timeline_include_hidden").prop("checked", settings.timeline.includeHidden);
     $("#psychograph_timeline_inject_enabled").prop("checked", settings.timeline.injectEnabled);
     $("#psychograph_timeline_inject_limit").val(settings.timeline.injectLimit);
-    $("#psychograph_triggers_auto_extract").prop("checked", settings.triggers.autoExtract);
-    $("#psychograph_triggers_include_hidden").prop("checked", settings.triggers.includeHidden);
-    $("#psychograph_triggers_compaction_interval").val(settings.triggers.compactionInterval);
+    for (const key of KNOWLEDGE_KEYS) {
+        $(`#psychograph_${key}_auto_extract`).prop("checked", settings.knowledge[key].autoExtract);
+        $(`#psychograph_${key}_include_hidden`).prop("checked", settings.knowledge[key].includeHidden);
+        $(`#psychograph_${key}_compaction_interval`).val(settings.knowledge[key].compactionInterval);
+    }
     renderCogneeChatSection();
 
     for (const { key, id } of STATE_AREAS) {
@@ -1144,20 +1440,22 @@ function bindSettingsEvents() {
         saveSettingsDebounced();
     });
 
-    $("#psychograph_triggers_auto_extract").on("change", function () {
-        ensureSettings().triggers.autoExtract = $(this).prop("checked");
-        saveSettingsDebounced();
-    });
+    for (const key of KNOWLEDGE_KEYS) {
+        $(`#psychograph_${key}_auto_extract`).on("change", function () {
+            ensureSettings().knowledge[key].autoExtract = $(this).prop("checked");
+            saveSettingsDebounced();
+        });
 
-    $("#psychograph_triggers_include_hidden").on("change", function () {
-        ensureSettings().triggers.includeHidden = $(this).prop("checked");
-        saveSettingsDebounced();
-    });
+        $(`#psychograph_${key}_include_hidden`).on("change", function () {
+            ensureSettings().knowledge[key].includeHidden = $(this).prop("checked");
+            saveSettingsDebounced();
+        });
 
-    $("#psychograph_triggers_compaction_interval").on("input", function () {
-        ensureSettings().triggers.compactionInterval = Math.max(0, Number($(this).val()) || 0);
-        saveSettingsDebounced();
-    });
+        $(`#psychograph_${key}_compaction_interval`).on("input", function () {
+            ensureSettings().knowledge[key].compactionInterval = Math.max(0, Number($(this).val()) || 0);
+            saveSettingsDebounced();
+        });
+    }
 
     $("#psychograph_timeline_build").on("click", buildTimeline);
 
@@ -1644,113 +1942,130 @@ async function extractTimelineForNewMessage(settings, profileId) {
     await refreshTimelineInject();
 }
 
-const TRIGGER_EXTRACTED_KEY = "psychographTriggersExtracted";
-
-function isTriggersExtracted(message) {
-    return Boolean(message?.extra?.[TRIGGER_EXTRACTED_KEY]);
+function knowledgeExtractedKey(layer) {
+    return `psychographKnowledge_${layer.id}`;
 }
 
-function markTriggersExtracted(message) {
+function isKnowledgeExtracted(layer, message) {
+    return Boolean(message?.extra?.[knowledgeExtractedKey(layer)]);
+}
+
+function markKnowledgeExtracted(layer, message) {
     message.extra = message.extra || {};
-    message.extra[TRIGGER_EXTRACTED_KEY] = true;
+    message.extra[knowledgeExtractedKey(layer)] = true;
     getContext().saveMetadataDebounced();
 }
 
-function readTriggerEntries() {
-    return ensureChatState().triggerMap.entries;
+function readKnowledgeEntries(layer) {
+    return ensureChatState().knowledge[layer.id].entries;
 }
 
-function writeTriggerEntries(entries) {
-    ensureChatState().triggerMap.entries = entries;
-    renderTriggerMap();
+function writeKnowledgeEntries(layer, entries) {
+    ensureChatState().knowledge[layer.id].entries = entries;
+    renderKnowledgeTable(layer);
     getContext().saveMetadataDebounced();
 }
 
-function normalizeTriggerField(value) {
+function normalizeKnowledgeField(value) {
     return String(value ?? "").replace(/\s+/g, " ").trim();
 }
 
-// Grouped by character rather than listed flat: the prompt asks what is already
-// known "for these characters", and that is easier to check per character.
-function renderTriggerMapForPrompt() {
-    const grouped = new Map();
-    for (const entry of readTriggerEntries()) {
-        const character = entry.character || "Unknown";
-        if (!grouped.has(character)) {
-            grouped.set(character, []);
-        }
-        grouped.get(character).push(entry);
+function readKnowledgeEntry(layer, raw) {
+    const entry = Object.fromEntries(layer.fields.map((field) => [field, normalizeKnowledgeField(raw?.[field])]));
+    return layer.fields.every((field) => entry[field]) ? entry : null;
+}
+
+function renderKnowledgeForPrompt(layer) {
+    const entries = readKnowledgeEntries(layer);
+    if (entries.length === 0) {
+        return layer.emptyPlaceholder;
     }
 
-    if (grouped.size === 0) {
-        return TRIGGER_MAP_EMPTY_PLACEHOLDER;
+    if (!layer.groupBy) {
+        return entries.map((entry) => `- ${layer.renderEntry(entry)}`).join("\n");
+    }
+
+    const grouped = new Map();
+    for (const entry of entries) {
+        const group = entry[layer.groupBy] || "Unknown";
+        if (!grouped.has(group)) {
+            grouped.set(group, []);
+        }
+        grouped.get(group).push(entry);
     }
 
     return [...grouped.entries()]
-        .map(([character, entries]) => `${character}\n${entries.map((entry) => `- ${entry.trigger} -> ${entry.response}`).join("\n")}`)
+        .map(([group, groupEntries]) => `${group}\n${groupEntries.map((entry) => `- ${layer.renderEntry(entry)}`).join("\n")}`)
         .join("\n\n");
 }
 
 // Flat and numbered rather than grouped: the numbers are what the model
 // references in merged_from, so they have to be unambiguous.
-function renderTriggerMapNumbered() {
-    return readTriggerEntries()
-        .map((entry, index) => `${index + 1}. ${entry.character} | ${entry.trigger} -> ${entry.response}`)
+function renderKnowledgeNumbered(layer) {
+    return readKnowledgeEntries(layer)
+        .map((entry, index) => `${index + 1}. ${layer.fields.map((field) => entry[field]).join(" | ")}`)
         .join("\n");
 }
 
-// Same reasoning as the timeline queue: two runs appending to one map would
-// each be told the other's entry does not exist yet.
-let triggerWork = Promise.resolve();
+// One queue per layer: two runs appending to the same list would each be told
+// the other's entry does not exist yet. Separate layers never touch the same
+// list, so they run side by side.
+const knowledgeWork = Object.fromEntries(KNOWLEDGE_KEYS.map((key) => [key, Promise.resolve()]));
 
-function queueTriggerWork(task) {
-    triggerWork = triggerWork.catch(() => {}).then(task);
-    return triggerWork;
+function queueKnowledgeWork(layer, task) {
+    knowledgeWork[layer.id] = knowledgeWork[layer.id].catch(() => {}).then(task);
+    return knowledgeWork[layer.id];
 }
 
-async function runTriggerEntryCall(profileId, schemaName, prompt, label) {
+const KNOWLEDGE_ENTRY_MAX_TOKENS = 500;
+
+// Budget scales with the input: a profile establishes far more at once than a
+// single message does, and a truncated array comes back as invalid JSON, which
+// loses every entry rather than the tail.
+function knowledgeBudgetFor(text) {
+    return Math.min(1500, Math.max(KNOWLEDGE_ENTRY_MAX_TOKENS, Math.round(String(text).length / 4)));
+}
+
+async function runKnowledgeCall(layer, profileId, prompt, maxTokens, label) {
     const chatState = ensureChatState();
 
     try {
-        const schema = buildTriggerEntriesSchema("One concise sentence covering all findings, before answering.");
-        const result = await sendJsonSchemaRequest(profileId, schemaName, schema, prompt, TRIGGER_MAP_MAX_TOKENS);
-        console.log(`[Psychograph] Trigger ${label} reasoning:`, result.reasoning);
+        const schema = buildKnowledgeSchema(layer, "One concise sentence covering all findings, before answering.");
+        const result = await sendJsonSchemaRequest(profileId, `${layer.id}_${label}`, schema, prompt, maxTokens);
+        console.log(`[Psychograph] ${layer.label} ${label} reasoning:`, result.reasoning);
 
         const found = (Array.isArray(result.entries) ? result.entries : [])
-            .map((entry) => ({
-                character: normalizeTriggerField(entry.character),
-                trigger: normalizeTriggerField(entry.trigger),
-                response: normalizeTriggerField(entry.response),
-            }))
-            .filter((entry) => entry.character && entry.trigger && entry.response);
+            .map((entry) => readKnowledgeEntry(layer, entry))
+            .filter(Boolean);
         if (found.length === 0) {
             return 0;
         }
         if (!isCurrentChatState(chatState)) {
-            console.warn("[Psychograph] Chat changed during the trigger call, discarding the entries.");
+            console.warn(`[Psychograph] Chat changed during the ${layer.label} call, discarding the entries.`);
             return 0;
         }
 
-        writeTriggerEntries([...readTriggerEntries(), ...found]);
+        writeKnowledgeEntries(layer, [...readKnowledgeEntries(layer), ...found]);
         return found.length;
     } catch (error) {
-        console.error(`[Psychograph] Trigger ${label} call failed:`, error);
+        console.error(`[Psychograph] ${layer.label} ${label} call failed:`, error);
         return 0;
     }
 }
 
-function extractTriggersForMessage(profileId, message) {
-    return runTriggerEntryCall(
+function extractKnowledgeFromMessage(layer, profileId, message) {
+    return runKnowledgeCall(
+        layer,
         profileId,
-        "trigger_map",
-        buildTriggerMapPrompt(renderTriggerMapForPrompt(), readMessageSpeaker(message), message.mes),
-        "map",
+        layer.buildPrompt(renderKnowledgeForPrompt(layer), readMessageSpeaker(message), message.mes),
+        KNOWLEDGE_ENTRY_MAX_TOKENS,
+        "message",
     );
 }
 
 // The character's own fields and the user persona are separate calls: one
 // profile per call is what lets the model put a name on the entries.
-function readTriggerSeedSources() {
+function readKnowledgeSeedSources() {
     const context = getContext();
     const fields = context.getCharacterCardFields();
 
@@ -1760,50 +2075,29 @@ function readTriggerSeedSources() {
     ].filter((source) => source.name && String(source.text ?? "").trim());
 }
 
-async function seedTriggersFromCard(profileId) {
-    const sources = readTriggerSeedSources();
+async function seedKnowledgeFromCard(layer, profileId) {
+    const sources = readKnowledgeSeedSources();
     if (sources.length === 0) {
-        console.log("[Psychograph] Trigger seeding: nothing on the card to seed from, skipping.");
+        console.log(`[Psychograph] ${layer.label} seeding: nothing on the card to seed from, skipping.`);
         return 0;
     }
 
     let added = 0;
     for (const source of sources) {
-        added += await runTriggerEntryCall(
+        added += await runKnowledgeCall(
+            layer,
             profileId,
-            "trigger_seed",
-            buildTriggerSeedPrompt(source.name, source.text, renderTriggerMapForPrompt()),
+            layer.buildSeedPrompt(source.name, source.text, renderKnowledgeForPrompt(layer)),
+            knowledgeBudgetFor(source.text),
             "seed",
         );
     }
     return added;
 }
 
-async function seedTriggersFromCardNow() {
-    const settings = ensureSettings();
-    if (!settings.connectionProfile) {
-        toastr.warning(NO_PROFILE_WARNING, "Psychograph");
-        return;
-    }
-    if (readTriggerSeedSources().length === 0) {
-        toastr.warning("No character description or persona to read.", "Psychograph");
-        return;
-    }
-
-    toastr.info("Reading the profiles for standing patterns…", "Psychograph");
-    captureUndoSnapshot("reading the profiles");
-    const added = await queueTriggerWork(() => seedTriggersFromCard(settings.connectionProfile));
-
-    if (added > 0) {
-        toastr.success(`${added} ${added === 1 ? "pattern" : "patterns"} from the profiles.`, "Psychograph");
-    } else {
-        toastr.info("No standing pattern in the profiles.", "Psychograph");
-    }
-}
-
-async function compactTriggerMap(profileId) {
+async function compactKnowledge(layer, profileId) {
     const chatState = ensureChatState();
-    const before = readTriggerEntries();
+    const before = readKnowledgeEntries(layer);
     if (before.length < 2) {
         return false;
     }
@@ -1811,25 +2105,27 @@ async function compactTriggerMap(profileId) {
     try {
         const result = await sendJsonSchemaRequest(
             profileId,
-            "trigger_compaction",
-            buildTriggerCompactionSchema(),
-            buildTriggerCompactionPrompt(renderTriggerMapNumbered()),
-            // The answer carries the whole map, so the budget has to grow with it
-            // or the JSON is cut off mid-entry on a map of any size.
+            `${layer.id}_compaction`,
+            buildKnowledgeSchema(layer, "One concise sentence on what was merged, before answering.", { withMergedFrom: true }),
+            layer.buildCompactionPrompt(renderKnowledgeNumbered(layer)),
+            // The answer carries the whole list, so the budget has to grow with
+            // it or the JSON is cut off mid-entry on a list of any size.
             Math.max(600, before.length * 80),
         );
-        console.log("[Psychograph] Trigger compaction reasoning:", result.reasoning);
+        console.log(`[Psychograph] ${layer.label} compaction reasoning:`, result.reasoning);
 
         const compacted = (Array.isArray(result.entries) ? result.entries : [])
-            .map((entry) => ({
-                character: normalizeTriggerField(entry.character),
-                trigger: normalizeTriggerField(entry.trigger),
-                response: normalizeTriggerField(entry.response),
-                mergedFrom: (Array.isArray(entry.merged_from) ? entry.merged_from : [])
+            .map((raw) => {
+                const entry = readKnowledgeEntry(layer, raw);
+                if (!entry) {
+                    return null;
+                }
+                entry.mergedFrom = (Array.isArray(raw.merged_from) ? raw.merged_from : [])
                     .map((number) => Number(number))
-                    .filter((number) => Number.isInteger(number) && number >= 1 && number <= before.length),
-            }))
-            .filter((entry) => entry.character && entry.trigger && entry.response);
+                    .filter((number) => Number.isInteger(number) && number >= 1 && number <= before.length);
+                return entry;
+            })
+            .filter(Boolean);
 
         const covered = new Set(compacted.flatMap((entry) => entry.mergedFrom));
         // No usable bookkeeping at all means the model ignored the format, and
@@ -1837,7 +2133,7 @@ async function compactTriggerMap(profileId) {
         // missing numbers is a normal miss worth repairing. This is the one
         // call that rewrites existing entries, so the difference matters.
         if (compacted.length === 0 || covered.size === 0) {
-            console.warn("[Psychograph] Trigger compaction came back unusable, keeping the map as it was.");
+            console.warn(`[Psychograph] ${layer.label} compaction came back unusable, keeping the list as it was.`);
             return false;
         }
         if (!isCurrentChatState(chatState)) {
@@ -1846,29 +2142,126 @@ async function compactTriggerMap(profileId) {
 
         const dropped = before.filter((_, index) => !covered.has(index + 1));
         if (dropped.length > 0) {
-            console.warn("[Psychograph] Trigger compaction left entries unaccounted for, keeping them unchanged:", dropped);
+            console.warn(`[Psychograph] ${layer.label} compaction left entries unaccounted for, keeping them unchanged:`, dropped);
         }
 
-        const merged = compacted.map(({ character, trigger, response }) => ({ character, trigger, response }));
-        writeTriggerEntries([...merged, ...dropped]);
-        console.log(`[Psychograph] Trigger map compacted from ${before.length} to ${readTriggerEntries().length} entries.`);
+        const merged = compacted.map((entry) => Object.fromEntries(layer.fields.map((field) => [field, entry[field]])));
+        writeKnowledgeEntries(layer, [...merged, ...dropped]);
+        console.log(`[Psychograph] ${layer.label} compacted from ${before.length} to ${readKnowledgeEntries(layer).length} entries.`);
         return true;
     } catch (error) {
-        console.error("[Psychograph] Trigger compaction failed:", error);
+        console.error(`[Psychograph] ${layer.label} compaction failed:`, error);
         return false;
     }
 }
 
-let triggerBuildRunning = false;
-let triggerBuildCancelled = false;
+async function extractKnowledgeForNewMessage(layer, settings, profileId) {
+    const layerSettings = settings.knowledge[layer.id];
+    if (!layerSettings.autoExtract) {
+        return;
+    }
 
-// Same shape as the timeline build, and for the same reason the map is handed
-// to every call: nothing here dedupes in code, the map in the prompt does it.
+    const message = getContext().chat.at(-2);
+    if (!isTimelineMessage(message, layerSettings.includeHidden) || isKnowledgeExtracted(layer, message)) {
+        return;
+    }
+    markKnowledgeExtracted(layer, message);
+
+    await queueKnowledgeWork(layer, async () => {
+        await extractKnowledgeFromMessage(layer, profileId, message);
+
+        const chatState = ensureChatState();
+        const interval = Number(layerSettings.compactionInterval) || 0;
+        chatState.knowledge[layer.id].sinceCompaction += 1;
+        if (interval > 0 && chatState.knowledge[layer.id].sinceCompaction >= interval) {
+            chatState.knowledge[layer.id].sinceCompaction = 0;
+            await compactKnowledge(layer, profileId);
+        }
+        getContext().saveMetadataDebounced();
+    });
+}
+
+async function rerunKnowledgeExtractionNow(layer) {
+    const settings = ensureSettings();
+    if (!settings.connectionProfile) {
+        toastr.warning(NO_PROFILE_WARNING, "Psychograph");
+        return;
+    }
+
+    const message = getContext().chat.at(-1);
+    if (!isTimelineMessage(message, settings.knowledge[layer.id].includeHidden)) {
+        toastr.warning("The last message is a system or hidden message, nothing to analyze.", "Psychograph");
+        return;
+    }
+
+    toastr.info(`Checking the last message for ${layer.label.toLowerCase()}…`, "Psychograph");
+    captureUndoSnapshot(`the ${layer.label.toLowerCase()} extraction`);
+    const added = await queueKnowledgeWork(layer, () => extractKnowledgeFromMessage(layer, settings.connectionProfile, message));
+    markKnowledgeExtracted(layer, message);
+    noteLastExtraction(message, layer.label);
+
+    if (added > 0) {
+        toastr.success(`${added} new ${added === 1 ? "entry" : "entries"}.`, "Psychograph");
+    } else {
+        toastr.info(`Nothing for ${layer.label.toLowerCase()} in that message.`, "Psychograph");
+    }
+}
+
+async function seedKnowledgeFromCardNow(layer) {
+    const settings = ensureSettings();
+    if (!settings.connectionProfile) {
+        toastr.warning(NO_PROFILE_WARNING, "Psychograph");
+        return;
+    }
+    if (readKnowledgeSeedSources().length === 0) {
+        toastr.warning("No character description or persona to read.", "Psychograph");
+        return;
+    }
+
+    toastr.info(`Reading the profiles for ${layer.label.toLowerCase()}…`, "Psychograph");
+    captureUndoSnapshot(`reading the profiles for ${layer.label.toLowerCase()}`);
+    const added = await queueKnowledgeWork(layer, () => seedKnowledgeFromCard(layer, settings.connectionProfile));
+
+    if (added > 0) {
+        toastr.success(`${added} ${added === 1 ? "entry" : "entries"} from the profiles.`, "Psychograph");
+    } else {
+        toastr.info(`Nothing for ${layer.label.toLowerCase()} in the profiles.`, "Psychograph");
+    }
+}
+
+async function compactKnowledgeNow(layer) {
+    const settings = ensureSettings();
+    if (!settings.connectionProfile) {
+        toastr.warning(NO_PROFILE_WARNING, "Psychograph");
+        return;
+    }
+    if (readKnowledgeEntries(layer).length < 2) {
+        toastr.info("Not enough entries to compact.", "Psychograph");
+        return;
+    }
+
+    toastr.info(`Compacting ${layer.label.toLowerCase()}…`, "Psychograph");
+    captureUndoSnapshot(`compacting ${layer.label.toLowerCase()}`);
+    const before = readKnowledgeEntries(layer).length;
+    const compacted = await queueKnowledgeWork(layer, () => compactKnowledge(layer, settings.connectionProfile));
+
+    if (compacted) {
+        toastr.success(`${layer.label}: ${before} entries in, ${readKnowledgeEntries(layer).length} out.`, "Psychograph");
+    } else {
+        toastr.info("Nothing merged, the list is unchanged.", "Psychograph");
+    }
+}
+
+const knowledgeBuildRunning = {};
+const knowledgeBuildCancelled = {};
+
+// Same shape as the timeline build, and for the same reason the list is handed
+// to every call: nothing here dedupes in code, the list in the prompt does it.
 // Compaction runs on its interval during the build too, or a long chat would
-// finish with a map that needs one anyway.
-async function buildTriggerMap() {
-    if (triggerBuildRunning) {
-        triggerBuildCancelled = true;
+// finish with a list that needs one anyway.
+async function buildKnowledge(layer) {
+    if (knowledgeBuildRunning[layer.id]) {
+        knowledgeBuildCancelled[layer.id] = true;
         return;
     }
 
@@ -1879,90 +2272,66 @@ async function buildTriggerMap() {
         return;
     }
 
-    const messages = getContext().chat.filter((message) => isTimelineMessage(message, settings.triggers.includeHidden));
+    const layerSettings = settings.knowledge[layer.id];
+    const messages = getContext().chat.filter((message) => isTimelineMessage(message, layerSettings.includeHidden));
     if (messages.length === 0) {
         toastr.info("No messages in this chat yet.", "Psychograph");
         return;
     }
 
     const chatState = ensureChatState();
-    const interval = Number(settings.triggers.compactionInterval) || 0;
-    captureUndoSnapshot("the trigger map build");
-    triggerBuildRunning = true;
-    triggerBuildCancelled = false;
-    $("#psychograph_triggers_build").text("Stop");
+    const interval = Number(layerSettings.compactionInterval) || 0;
+    const statusElement = $(`#psychograph_${layer.id}_status`);
+    const buildButton = $(`#psychograph_${layer.id}_build`);
+    captureUndoSnapshot(`the ${layer.label.toLowerCase()} build`);
+    knowledgeBuildRunning[layer.id] = true;
+    knowledgeBuildCancelled[layer.id] = false;
+    buildButton.text("Stop");
 
     let added = 0;
     let compactions = 0;
     let sinceCompaction = 0;
     try {
-        // Before message #0: a pattern the card establishes ("she goes under on
-        // the word 'sleep'") may never be demonstrated in the chat at all.
-        $("#psychograph_triggers_status").text("Reading the character profile…");
-        added += await queueTriggerWork(() => seedTriggersFromCard(profileId));
+        // Before message #0: what the card establishes may never come up in the
+        // chat at all, and for a profile that is most of what there is to know.
+        statusElement.text("Reading the character profile…");
+        added += await queueKnowledgeWork(layer, () => seedKnowledgeFromCard(layer, profileId));
 
         for (let i = 0; i < messages.length; i++) {
-            if (triggerBuildCancelled) {
+            if (knowledgeBuildCancelled[layer.id]) {
                 break;
             }
             if (!isCurrentChatState(chatState)) {
-                console.warn("[Psychograph] Chat changed during the trigger map build, stopping.");
+                console.warn(`[Psychograph] Chat changed during the ${layer.label} build, stopping.`);
                 break;
             }
 
-            const message = messages[i];
-            $("#psychograph_triggers_status").text(
-                `Message ${i + 1}/${messages.length}, ${added} patterns, ${compactions} compactions…`,
-            );
-
-            added += await queueTriggerWork(() => extractTriggersForMessage(profileId, message));
-            markTriggersExtracted(message);
+            statusElement.text(`${i + 1}/${messages.length} messages · ${added} entries · ${compactions} compactions…`);
+            added += await queueKnowledgeWork(layer, () => extractKnowledgeFromMessage(layer, profileId, messages[i]));
+            markKnowledgeExtracted(layer, messages[i]);
 
             sinceCompaction += 1;
             if (interval > 0 && sinceCompaction >= interval) {
                 sinceCompaction = 0;
-                if (await queueTriggerWork(() => compactTriggerMap(profileId))) {
+                if (await queueKnowledgeWork(layer, () => compactKnowledge(layer, profileId))) {
                     compactions += 1;
                 }
             }
         }
 
-        chatState.triggerMap.sinceCompaction = sinceCompaction;
+        chatState.knowledge[layer.id].sinceCompaction = sinceCompaction;
         getContext().saveMetadataDebounced();
 
-        const summary = `${added} patterns found, ${readTriggerEntries().length} on the map after ${compactions} compactions.`;
-        if (triggerBuildCancelled) {
+        const summary = `${added} found, ${readKnowledgeEntries(layer).length} on the list after ${compactions} compactions.`;
+        if (knowledgeBuildCancelled[layer.id]) {
             toastr.info(`Stopped. ${summary}`, "Psychograph");
         } else {
-            toastr.success(`Trigger map built: ${summary}`, "Psychograph");
+            toastr.success(`${layer.label} built: ${summary}`, "Psychograph");
         }
     } finally {
-        triggerBuildRunning = false;
-        $("#psychograph_triggers_build").text("Build trigger map");
-        $("#psychograph_triggers_status").text("");
-    }
-}
-
-async function compactTriggerMapNow() {
-    const settings = ensureSettings();
-    if (!settings.connectionProfile) {
-        toastr.warning(NO_PROFILE_WARNING, "Psychograph");
-        return;
-    }
-    if (readTriggerEntries().length < 2) {
-        toastr.info("Not enough entries to compact.", "Psychograph");
-        return;
-    }
-
-    toastr.info("Compacting the trigger map…", "Psychograph");
-    captureUndoSnapshot("compacting the trigger map");
-    const before = readTriggerEntries().length;
-    const compacted = await queueTriggerWork(() => compactTriggerMap(settings.connectionProfile));
-
-    if (compacted) {
-        toastr.success(`Trigger map: ${before} entries in, ${readTriggerEntries().length} out.`, "Psychograph");
-    } else {
-        toastr.info("Nothing merged, the map is unchanged.", "Psychograph");
+        knowledgeBuildRunning[layer.id] = false;
+        buildButton.text(`Build ${layer.label.toLowerCase()}`);
+        statusElement.text("");
     }
 }
 
@@ -2289,7 +2658,7 @@ function handleChatMessageEvent() {
         await Promise.all([
             extractStateForNewMessage(settings, profileId),
             extractTimelineForNewMessage(settings, profileId),
-            extractTriggersForNewMessage(settings, profileId),
+            ...KNOWLEDGE_KEYS.map((key) => extractKnowledgeForNewMessage(KNOWLEDGE_LAYERS[key], settings, profileId)),
         ]);
     };
 }
@@ -2503,7 +2872,7 @@ async function initAreaFromDescription(areaKey) {
 
 const SHEET_ID = "psychograph_sheet";
 const SHEET_TIMELINE_TAB = "timeline";
-const SHEET_TRIGGERS_TAB = "triggers";
+
 
 let activeSheetTab = STATE_AREAS[0].key;
 
@@ -2517,7 +2886,7 @@ function buildSheetTabsHtml() {
     const tabs = [
         ...STATE_AREAS.map(({ key }) => ({ key, label: AREA_SLOT_CONFIGS[key].label })),
         { key: SHEET_TIMELINE_TAB, label: "Timeline" },
-        { key: SHEET_TRIGGERS_TAB, label: "Triggers" },
+        ...KNOWLEDGE_KEYS.map((key) => ({ key, label: KNOWLEDGE_LAYERS[key].label })),
     ];
     return tabs.map(({ key, label }) => `
         <div class="psychograph-sheet-tab" data-tab="${key}">${label}</div>
@@ -2584,39 +2953,40 @@ function buildSheetTimelinePaneHtml() {
     `;
 }
 
-function buildSheetTriggersPaneHtml() {
+function buildSheetKnowledgePaneHtml(layerKey) {
+    const layer = KNOWLEDGE_LAYERS[layerKey];
+    const headers = layer.fields.map((field) => `<th>${humanizeSlot(field)}</th>`).join("");
+
     return `
-        <div class="psychograph-sheet-pane" data-tab="${SHEET_TRIGGERS_TAB}">
+        <div class="psychograph-sheet-pane" data-tab="${layerKey}">
             <div class="psychograph-sheet-pane-header">
-                <label class="checkbox_label" for="psychograph_triggers_auto_extract">
-                    <input id="psychograph_triggers_auto_extract" type="checkbox" />
+                <label class="checkbox_label" for="psychograph_${layerKey}_auto_extract">
+                    <input id="psychograph_${layerKey}_auto_extract" type="checkbox" />
                     Enabled
                 </label>
-                <span id="psychograph_sheet_triggers_count" class="psychograph-sheet-count"></span>
-                <div class="psychograph-sheet-options-toggle fa-solid fa-gear interactable" data-tab="${SHEET_TRIGGERS_TAB}" title="Settings" tabindex="0"></div>
+                <span id="psychograph_${layerKey}_count" class="psychograph-sheet-count"></span>
+                <div class="psychograph-sheet-options-toggle fa-solid fa-gear interactable" data-tab="${layerKey}" title="Settings" tabindex="0"></div>
             </div>
             <div class="psychograph-sheet-actions">
-                <div id="psychograph_triggers_build" class="menu_button">Build map</div>
-                <div id="psychograph_triggers_seed" class="menu_button" title="Read the character description and persona for standing patterns">Init from description</div>
-                <div id="psychograph_triggers_compact" class="menu_button" title="Merge entries that describe the same pattern">Compact</div>
+                <div id="psychograph_${layerKey}_build" class="menu_button">Build ${layer.label.toLowerCase()}</div>
+                <div id="psychograph_${layerKey}_seed" class="menu_button" title="Read the character description and persona">Init from description</div>
+                <div id="psychograph_${layerKey}_compact" class="menu_button" title="Merge entries that say the same thing">Compact</div>
             </div>
-            <small id="psychograph_triggers_status" class="psychograph-sheet-hint"></small>
-            <div class="psychograph-sheet-options" data-tab="${SHEET_TRIGGERS_TAB}">
-                <label class="checkbox_label" for="psychograph_triggers_include_hidden">
-                    <input id="psychograph_triggers_include_hidden" type="checkbox" />
+            <small id="psychograph_${layerKey}_status" class="psychograph-sheet-hint"></small>
+            <div class="psychograph-sheet-options" data-tab="${layerKey}">
+                <label class="checkbox_label" for="psychograph_${layerKey}_include_hidden">
+                    <input id="psychograph_${layerKey}_include_hidden" type="checkbox" />
                     Include hidden messages
                 </label>
-                <label for="psychograph_triggers_compaction_interval">Compact every N messages (0 = never)</label>
-                <input id="psychograph_triggers_compaction_interval" type="number" min="0" step="1" class="text_pole" />
+                <label for="psychograph_${layerKey}_compaction_interval">Compact every N messages (0 = never)</label>
+                <input id="psychograph_${layerKey}_compaction_interval" type="number" min="0" step="1" class="text_pole" />
             </div>
-            <table class="psychograph-trigger-table">
-                <thead>
-                    <tr><th>Character</th><th>Trigger</th><th>Response</th><th></th></tr>
-                </thead>
-                <tbody id="psychograph_trigger_rows"></tbody>
+            <table class="psychograph-knowledge-table" data-tab="${layerKey}">
+                <thead><tr>${headers}<th></th></tr></thead>
+                <tbody id="psychograph_${layerKey}_rows"></tbody>
             </table>
-            <div id="psychograph_trigger_empty" class="psychograph-sheet-hint">Nothing on the map yet.</div>
-            <div id="psychograph_trigger_add" class="psychograph-trigger-add interactable" title="Add an empty row" tabindex="0">
+            <div id="psychograph_${layerKey}_empty" class="psychograph-sheet-hint">Nothing here yet.</div>
+            <div id="psychograph_${layerKey}_add" class="psychograph-knowledge-add interactable" data-tab="${layerKey}" title="Add an empty row" tabindex="0">
                 <i class="fa-solid fa-plus"></i> Add row
             </div>
         </div>
@@ -2640,7 +3010,7 @@ function buildSheetBodyHtml() {
         <div class="psychograph-sheet-content">
             ${STATE_AREAS.map(({ key }) => buildSheetAreaPaneHtml(key)).join("")}
             ${buildSheetTimelinePaneHtml()}
-            ${buildSheetTriggersPaneHtml()}
+            ${KNOWLEDGE_KEYS.map((key) => buildSheetKnowledgePaneHtml(key)).join("")}
         </div>
         <div class="psychograph-sheet-footer">
             <span id="psychograph_sheet_status" class="psychograph-sheet-hint"></span>
@@ -2715,7 +3085,7 @@ function renderSheetHeader() {
     $("#psychograph_sheet_character").text(readTargetName());
     const entries = readTimeline().split("\n").filter((line) => line.trim()).length;
     $("#psychograph_sheet_timeline_count").text(`${entries} ${entries === 1 ? "entry" : "entries"}`);
-    renderTriggerMap();
+    renderAllKnowledgeTables();
     renderSheetFooter();
 }
 
@@ -2723,21 +3093,27 @@ function escapeHtmlAttribute(value) {
     return String(value ?? "").replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
 
-function renderTriggerMap() {
-    const entries = readTriggerEntries();
+function renderKnowledgeTable(layer) {
+    const entries = readKnowledgeEntries(layer);
     const rows = entries.map((entry, index) => `
         <tr data-index="${index}">
-            ${["character", "trigger", "response"].map((field) => `
-                <td><input type="text" class="psychograph-trigger-input" data-field="${field}" value="${escapeHtmlAttribute(entry[field])}" /></td>
+            ${layer.fields.map((field) => `
+                <td><input type="text" class="psychograph-knowledge-input" data-field="${field}" value="${escapeHtmlAttribute(entry[field])}" /></td>
             `).join("")}
-            <td><div class="psychograph-trigger-delete fa-solid fa-xmark interactable" title="Delete entry" tabindex="0"></div></td>
+            <td><div class="psychograph-knowledge-delete fa-solid fa-xmark interactable" title="Delete entry" tabindex="0"></div></td>
         </tr>
     `).join("");
 
-    $("#psychograph_trigger_rows").html(rows);
-    $("#psychograph_trigger_empty").toggleClass("shown", entries.length === 0);
-    $(".psychograph-trigger-table").toggleClass("shown", entries.length > 0);
-    $("#psychograph_sheet_triggers_count").text(`${entries.length} ${entries.length === 1 ? "entry" : "entries"}`);
+    $(`#psychograph_${layer.id}_rows`).html(rows);
+    $(`#psychograph_${layer.id}_empty`).toggleClass("shown", entries.length === 0);
+    $(`.psychograph-knowledge-table[data-tab="${layer.id}"]`).toggleClass("shown", entries.length > 0);
+    $(`#psychograph_${layer.id}_count`).text(`${entries.length} ${entries.length === 1 ? "entry" : "entries"}`);
+}
+
+function renderAllKnowledgeTables() {
+    for (const key of KNOWLEDGE_KEYS) {
+        renderKnowledgeTable(KNOWLEDGE_LAYERS[key]);
+    }
 }
 
 function renderSheetFooter() {
@@ -2754,8 +3130,8 @@ async function extractActiveSheetTabNow() {
         await rerunTimelineExtractionNow();
         return;
     }
-    if (activeSheetTab === SHEET_TRIGGERS_TAB) {
-        await rerunTriggerExtractionNow();
+    if (KNOWLEDGE_LAYERS[activeSheetTab]) {
+        await rerunKnowledgeExtractionNow(KNOWLEDGE_LAYERS[activeSheetTab]);
         return;
     }
     await rerunAreaExtractionNow(activeSheetTab);
@@ -2807,19 +3183,26 @@ function bindSheetEvents() {
 
     $("#psychograph_sheet_extract").on("click", extractActiveSheetTabNow);
     $("#psychograph_sheet_restore").on("click", restorePreviousState);
-    $("#psychograph_triggers_build").on("click", buildTriggerMap);
-    $("#psychograph_triggers_seed").on("click", seedTriggersFromCardNow);
-    $("#psychograph_triggers_compact").on("click", compactTriggerMapNow);
+    for (const key of KNOWLEDGE_KEYS) {
+        const layer = KNOWLEDGE_LAYERS[key];
+        $(`#psychograph_${key}_build`).on("click", () => buildKnowledge(layer));
+        $(`#psychograph_${key}_seed`).on("click", () => seedKnowledgeFromCardNow(layer));
+        $(`#psychograph_${key}_compact`).on("click", () => compactKnowledgeNow(layer));
 
-    $("#psychograph_trigger_add").on("click", function () {
-        writeTriggerEntries([...readTriggerEntries(), { character: "", trigger: "", response: "" }]);
-        $("#psychograph_trigger_rows tr:last-child .psychograph-trigger-input").first().trigger("focus");
-    });
+        $(`#psychograph_${key}_add`).on("click", function () {
+            writeKnowledgeEntries(layer, [
+                ...readKnowledgeEntries(layer),
+                Object.fromEntries(layer.fields.map((field) => [field, ""])),
+            ]);
+            $(`#psychograph_${key}_rows tr:last-child .psychograph-knowledge-input`).first().trigger("focus");
+        });
+    }
 
     // Delegated, so a re-render doesn't have to rebind every row.
-    panel.on("input", ".psychograph-trigger-input", function () {
+    panel.on("input", ".psychograph-knowledge-input", function () {
+        const layer = KNOWLEDGE_LAYERS[String($(this).closest(".psychograph-sheet-pane").data("tab"))];
         const index = Number($(this).closest("tr").data("index"));
-        const entries = readTriggerEntries();
+        const entries = readKnowledgeEntries(layer);
         if (!entries[index]) {
             return;
         }
@@ -2827,10 +3210,11 @@ function bindSheetEvents() {
         getContext().saveMetadataDebounced();
     });
 
-    panel.on("click", ".psychograph-trigger-delete", function () {
+    panel.on("click", ".psychograph-knowledge-delete", function () {
+        const layer = KNOWLEDGE_LAYERS[String($(this).closest(".psychograph-sheet-pane").data("tab"))];
         const index = Number($(this).closest("tr").data("index"));
-        captureUndoSnapshot("deleting a trigger entry");
-        writeTriggerEntries(readTriggerEntries().filter((_, position) => position !== index));
+        captureUndoSnapshot(`deleting a ${layer.label.toLowerCase()} entry`);
+        writeKnowledgeEntries(layer, readKnowledgeEntries(layer).filter((_, position) => position !== index));
     });
 
     for (const { key } of STATE_AREAS) {
