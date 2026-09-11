@@ -6,7 +6,7 @@ import { STATE_AREAS } from "./layers/state/areas.js";
 const defaultSettings = {
     enabled: true,
     connectionProfile: "",
-    parallelRequests: 4,
+    parallelRequests: 8,
     similarity: {
         baseUrl: "",
         apiKey: "",

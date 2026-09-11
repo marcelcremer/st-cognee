@@ -23,8 +23,8 @@
                     <small>Connection used for Psychograph's own extraction calls (state, timeline, lore). "SillyTavern default" uses whatever connection is currently active.</small>
 
                     <label for="psychograph_parallel_requests">Parallel requests during a backfill</label>
-                    <input id="psychograph_parallel_requests" type="number" min="1" max="16" step="1" class="text_pole" />
-                    <small>How many extraction calls may be in flight at once, counted across all layers. A single request rarely saturates a local model &mdash; raise this to the number of slots the backend serves, lower it if memory gets tight. Messages you send are never queued behind a backfill.</small>
+                    <input id="psychograph_parallel_requests" type="number" min="1" max="64" step="1" class="text_pole" />
+                    <small>How many extraction calls may be in flight at once, counted across all layers. A backend that batches refills its own queue without waiting for the client, so this can safely exceed the number of slots it serves at once &mdash; raise it until the backend stops getting faster, lower it if memory gets tight. Messages you send are never queued behind a backfill.</small>
                 </div>
             </div>
 

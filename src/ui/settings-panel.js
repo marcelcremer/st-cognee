@@ -113,7 +113,7 @@ export function bindSettingsEvents() {
     $("#psychograph_similarity_test").on("click", testSimilarityService);
 
     $("#psychograph_parallel_requests").on("input", function () {
-        ensureSettings().parallelRequests = Math.min(16, Math.max(1, Number($(this).val()) || 1));
+        ensureSettings().parallelRequests = Math.min(64, Math.max(1, Number($(this).val()) || 1));
         saveSettingsDebounced();
     });
 

@@ -1,5 +1,4 @@
 import { eventSource, event_types, getContext } from "./sillytavern.js";
-import { setGenerationRunning } from "./extraction-queue.js";
 import { flushCogneeRecallInject, flushContextInject, flushLegacyInjects, flushMotivationInject, handleCogneeRecall, handleInjectsForGeneration } from "./injects.js";
 import { handleCogneeIngestion } from "./layers/cognee.js";
 import { extractKnowledgeForNewMessage } from "./layers/knowledge/extraction.js";
@@ -57,13 +56,6 @@ function handleMotivationRecord(messageId) {
 }
 
 export function bindChatEvents() {
-    // Bound before the extraction listeners so a finished generation has
-    // already released the concurrency budget by the time work is queued.
-    eventSource.on(event_types.GENERATION_STARTED, () => setGenerationRunning(true));
-    eventSource.on(event_types.GENERATION_ENDED, () => setGenerationRunning(false));
-    eventSource.on(event_types.GENERATION_STOPPED, () => setGenerationRunning(false));
-    eventSource.on(event_types.MESSAGE_RECEIVED, () => setGenerationRunning(false));
-
     eventSource.on(event_types.MESSAGE_SENT, handleChatMessageEvent());
     eventSource.on(event_types.MESSAGE_RECEIVED, handleChatMessageEvent());
 
