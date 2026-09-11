@@ -41,7 +41,7 @@ function buildStateSnapshot() {
         const heading = config.scope === "character"
             ? `${readTargetName()}'s ${config.label.toLowerCase()}`
             : config.label;
-        groups.push(`${heading}\n${lines.join("\n")}`);
+        groups.push(`### ${heading}\n${lines.join("\n")}`);
     }
 
     return groups.join("\n\n");
