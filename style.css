@@ -270,52 +270,99 @@
     margin: 0;
 }
 
-/* Trigger map. SillyTavern has no table styling of its own (its one table
-   class is unused and breaks words mid-word), so the sheet brings its own. */
-.psychograph-knowledge-table {
-    display: none;
+/* Knowledge list: grouped by character, one collapsible section per layer,
+   each entry stacked over two lines. SillyTavern has no table styling of its
+   own worth using here (its one table class breaks words mid-word), and the
+   stacked form reads better in a narrow panel than three columns would. */
+.psychograph-knowledge-group {
+    margin-bottom: 10px;
+}
+
+.psychograph-knowledge-group-name {
     width: 100%;
-    border-collapse: collapse;
-    table-layout: fixed;
-}
-
-.psychograph-knowledge-table.shown {
-    display: table;
-}
-
-.psychograph-knowledge-table th {
+    box-sizing: border-box;
     padding: 2px 4px;
-    font-size: 0.75em;
-    font-weight: normal;
-    text-align: left;
+    font-size: 1em;
+    font-weight: bold;
+    color: inherit;
+    background-color: transparent;
+    border: 1px solid transparent;
+    border-bottom-color: var(--SmartThemeBorderColor, var(--SmartThemeBodyColor));
+    border-radius: 3px;
+    outline: none;
+}
+
+.psychograph-knowledge-group-name:hover,
+.psychograph-knowledge-group-name:focus {
+    border-color: var(--SmartThemeQuoteColor, var(--SmartThemeBodyColor));
+}
+
+.psychograph-knowledge-section {
+    margin: 4px 0 0 6px;
+}
+
+.psychograph-knowledge-section-header {
+    display: flex;
+    align-items: center;
+    gap: 0.5em;
+    padding: 3px 2px;
+    font-size: 0.85em;
     text-transform: uppercase;
-    opacity: 0.6;
-    border-bottom: 1px solid var(--SmartThemeBorderColor, var(--SmartThemeBodyColor));
+    letter-spacing: 0.04em;
+    opacity: 0.7;
+    cursor: pointer;
 }
 
-.psychograph-knowledge-table th:first-child {
-    width: 26%;
+.psychograph-knowledge-section-header:hover {
+    opacity: 1;
 }
 
-.psychograph-knowledge-table th:nth-child(4) {
-    width: 1.6em;
+.psychograph-knowledge-section-header .psychograph-sheet-count {
+    margin-left: auto;
 }
 
-.psychograph-knowledge-table td {
-    padding: 1px;
-    vertical-align: top;
+.psychograph-knowledge-entries {
+    display: none;
+    flex-direction: column;
+    gap: 4px;
+    padding-left: 6px;
+    border-left: 1px solid var(--SmartThemeBorderColor, var(--SmartThemeBodyColor));
+}
+
+.psychograph-knowledge-section.open .psychograph-knowledge-entries {
+    display: flex;
+}
+
+.psychograph-knowledge-entry {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+}
+
+.psychograph-knowledge-entry-fields {
+    display: flex;
+    flex-direction: column;
+    flex: 1;
+    min-width: 0;
 }
 
 .psychograph-knowledge-input {
     width: 100%;
     box-sizing: border-box;
-    padding: 3px 4px;
-    font-size: 0.85em;
+    padding: 2px 4px;
+    font-size: 0.9em;
     color: inherit;
     background-color: transparent;
     border: 1px solid transparent;
     border-radius: 3px;
     outline: none;
+}
+
+/* The second line of an entry is what the first one leads to, so it reads as
+   subordinate rather than as a second, equal field. */
+.psychograph-knowledge-input:not(:first-child) {
+    padding-left: 12px;
+    opacity: 0.85;
 }
 
 .psychograph-knowledge-input:hover {
@@ -325,25 +372,17 @@
 .psychograph-knowledge-input:focus {
     border-color: var(--SmartThemeQuoteColor, var(--SmartThemeBodyColor));
     background-color: var(--black30a, rgba(0, 0, 0, 0.3));
+    opacity: 1;
 }
 
 .psychograph-knowledge-delete {
     padding: 3px;
     cursor: pointer;
-    opacity: 0.4;
+    opacity: 0.35;
 }
 
 .psychograph-knowledge-delete:hover {
     opacity: 1;
-}
-
-.psychograph-sheet-pane .psychograph-sheet-hint[id$="_empty"] {
-    display: none;
-    padding: 6px 2px;
-}
-
-.psychograph-sheet-pane .psychograph-sheet-hint[id$="_empty"].shown {
-    display: block;
 }
 
 .psychograph-knowledge-add {
@@ -352,14 +391,18 @@
     justify-content: center;
     gap: 0.4em;
     margin-top: 2px;
-    padding: 4px;
-    font-size: 0.85em;
+    padding: 3px;
+    font-size: 0.8em;
     cursor: pointer;
-    opacity: 0.6;
+    opacity: 0.5;
     border: 1px dashed var(--SmartThemeBorderColor, var(--SmartThemeBodyColor));
     border-radius: 4px;
 }
 
 .psychograph-knowledge-add:hover {
     opacity: 1;
+}
+
+.psychograph-knowledge-settings {
+    padding-bottom: 6px;
 }

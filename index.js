@@ -941,8 +941,8 @@ const KNOWLEDGE_LAYERS = {
             object: "The other side of the relation.",
         },
         emptyPlaceholder: "Nothing known yet.",
-        groupBy: null,
-        renderEntry: (entry) => `${entry.subject} | ${entry.relation} | ${entry.object}`,
+        groupBy: "subject",
+        renderEntry: (entry) => `${entry.relation} ${entry.object}`,
         buildPrompt: buildFactPrompt,
         buildSeedPrompt: buildFactSeedPrompt,
         buildCompactionPrompt: buildFactCompactionPrompt,
@@ -1962,7 +1962,7 @@ function readKnowledgeEntries(layer) {
 
 function writeKnowledgeEntries(layer, entries) {
     ensureChatState().knowledge[layer.id].entries = entries;
-    renderKnowledgeTable(layer);
+    renderKnowledgeGroups();
     getContext().saveMetadataDebounced();
 }
 
@@ -2281,8 +2281,8 @@ async function buildKnowledge(layer) {
 
     const chatState = ensureChatState();
     const interval = Number(layerSettings.compactionInterval) || 0;
-    const statusElement = $(`#psychograph_${layer.id}_status`);
-    const buildButton = $(`#psychograph_${layer.id}_build`);
+    const statusElement = $("#psychograph_knowledge_status");
+    const buildButton = $("#psychograph_knowledge_build");
     captureUndoSnapshot(`the ${layer.label.toLowerCase()} build`);
     knowledgeBuildRunning[layer.id] = true;
     knowledgeBuildCancelled[layer.id] = false;
@@ -2294,7 +2294,7 @@ async function buildKnowledge(layer) {
     try {
         // Before message #0: what the card establishes may never come up in the
         // chat at all, and for a profile that is most of what there is to know.
-        statusElement.text("Reading the character profile…");
+        statusElement.text(`${layer.label}: reading the character profile…`);
         added += await queueKnowledgeWork(layer, () => seedKnowledgeFromCard(layer, profileId));
 
         for (let i = 0; i < messages.length; i++) {
@@ -2306,7 +2306,7 @@ async function buildKnowledge(layer) {
                 break;
             }
 
-            statusElement.text(`${i + 1}/${messages.length} messages · ${added} entries · ${compactions} compactions…`);
+            statusElement.text(`${layer.label}: ${i + 1}/${messages.length} messages · ${added} entries · ${compactions} compactions…`);
             added += await queueKnowledgeWork(layer, () => extractKnowledgeFromMessage(layer, profileId, messages[i]));
             markKnowledgeExtracted(layer, messages[i]);
 
@@ -2330,7 +2330,7 @@ async function buildKnowledge(layer) {
         }
     } finally {
         knowledgeBuildRunning[layer.id] = false;
-        buildButton.text(`Build ${layer.label.toLowerCase()}`);
+        buildButton.text("Build all");
         statusElement.text("");
     }
 }
@@ -2886,7 +2886,7 @@ function buildSheetTabsHtml() {
     const tabs = [
         ...STATE_AREAS.map(({ key }) => ({ key, label: AREA_SLOT_CONFIGS[key].label })),
         { key: SHEET_TIMELINE_TAB, label: "Timeline" },
-        ...KNOWLEDGE_KEYS.map((key) => ({ key, label: KNOWLEDGE_LAYERS[key].label })),
+        { key: SHEET_KNOWLEDGE_TAB, label: "Knowledge" },
     ];
     return tabs.map(({ key, label }) => `
         <div class="psychograph-sheet-tab" data-tab="${key}">${label}</div>
@@ -2953,41 +2953,43 @@ function buildSheetTimelinePaneHtml() {
     `;
 }
 
-function buildSheetKnowledgePaneHtml(layerKey) {
-    const layer = KNOWLEDGE_LAYERS[layerKey];
-    const headers = layer.fields.map((field) => `<th>${humanizeSlot(field)}</th>`).join("");
+const SHEET_KNOWLEDGE_TAB = "knowledge";
+
+function buildSheetKnowledgePaneHtml() {
+    const layerSettings = KNOWLEDGE_KEYS.map((key) => {
+        const layer = KNOWLEDGE_LAYERS[key];
+        return `
+            <div class="psychograph-knowledge-settings">
+                <label class="checkbox_label" for="psychograph_${key}_auto_extract">
+                    <input id="psychograph_${key}_auto_extract" type="checkbox" />
+                    ${layer.label}: extract on every message
+                </label>
+                <label class="checkbox_label" for="psychograph_${key}_include_hidden">
+                    <input id="psychograph_${key}_include_hidden" type="checkbox" />
+                    ${layer.label}: include hidden messages
+                </label>
+                <label for="psychograph_${key}_compaction_interval">${layer.label}: compact every N messages (0 = never)</label>
+                <input id="psychograph_${key}_compaction_interval" type="number" min="0" step="1" class="text_pole" />
+            </div>
+        `;
+    }).join("");
 
     return `
-        <div class="psychograph-sheet-pane" data-tab="${layerKey}">
+        <div class="psychograph-sheet-pane" data-tab="${SHEET_KNOWLEDGE_TAB}">
             <div class="psychograph-sheet-pane-header">
-                <label class="checkbox_label" for="psychograph_${layerKey}_auto_extract">
-                    <input id="psychograph_${layerKey}_auto_extract" type="checkbox" />
-                    Enabled
-                </label>
-                <span id="psychograph_${layerKey}_count" class="psychograph-sheet-count"></span>
-                <div class="psychograph-sheet-options-toggle fa-solid fa-gear interactable" data-tab="${layerKey}" title="Settings" tabindex="0"></div>
+                <span id="psychograph_knowledge_count" class="psychograph-sheet-count"></span>
+                <div class="psychograph-sheet-options-toggle fa-solid fa-gear interactable" data-tab="${SHEET_KNOWLEDGE_TAB}" title="Settings" tabindex="0"></div>
             </div>
             <div class="psychograph-sheet-actions">
-                <div id="psychograph_${layerKey}_build" class="menu_button">Build ${layer.label.toLowerCase()}</div>
-                <div id="psychograph_${layerKey}_seed" class="menu_button" title="Read the character description and persona">Init from description</div>
-                <div id="psychograph_${layerKey}_compact" class="menu_button" title="Merge entries that say the same thing">Compact</div>
+                <div id="psychograph_knowledge_build" class="menu_button">Build all</div>
+                <div id="psychograph_knowledge_seed" class="menu_button" title="Read the character description and persona">Init from description</div>
+                <div id="psychograph_knowledge_compact" class="menu_button" title="Merge entries that say the same thing">Compact</div>
             </div>
-            <small id="psychograph_${layerKey}_status" class="psychograph-sheet-hint"></small>
-            <div class="psychograph-sheet-options" data-tab="${layerKey}">
-                <label class="checkbox_label" for="psychograph_${layerKey}_include_hidden">
-                    <input id="psychograph_${layerKey}_include_hidden" type="checkbox" />
-                    Include hidden messages
-                </label>
-                <label for="psychograph_${layerKey}_compaction_interval">Compact every N messages (0 = never)</label>
-                <input id="psychograph_${layerKey}_compaction_interval" type="number" min="0" step="1" class="text_pole" />
-            </div>
-            <table class="psychograph-knowledge-table" data-tab="${layerKey}">
-                <thead><tr>${headers}<th></th></tr></thead>
-                <tbody id="psychograph_${layerKey}_rows"></tbody>
-            </table>
-            <div id="psychograph_${layerKey}_empty" class="psychograph-sheet-hint">Nothing here yet.</div>
-            <div id="psychograph_${layerKey}_add" class="psychograph-knowledge-add interactable" data-tab="${layerKey}" title="Add an empty row" tabindex="0">
-                <i class="fa-solid fa-plus"></i> Add row
+            <small id="psychograph_knowledge_status" class="psychograph-sheet-hint"></small>
+            <div class="psychograph-sheet-options" data-tab="${SHEET_KNOWLEDGE_TAB}">${layerSettings}</div>
+            <div id="psychograph_knowledge_groups"></div>
+            <div id="psychograph_knowledge_add_group" class="psychograph-knowledge-add interactable" title="Add an entry for someone new" tabindex="0">
+                <i class="fa-solid fa-plus"></i> Add someone
             </div>
         </div>
     `;
@@ -3010,7 +3012,7 @@ function buildSheetBodyHtml() {
         <div class="psychograph-sheet-content">
             ${STATE_AREAS.map(({ key }) => buildSheetAreaPaneHtml(key)).join("")}
             ${buildSheetTimelinePaneHtml()}
-            ${KNOWLEDGE_KEYS.map((key) => buildSheetKnowledgePaneHtml(key)).join("")}
+            ${buildSheetKnowledgePaneHtml()}
         </div>
         <div class="psychograph-sheet-footer">
             <span id="psychograph_sheet_status" class="psychograph-sheet-hint"></span>
@@ -3085,7 +3087,7 @@ function renderSheetHeader() {
     $("#psychograph_sheet_character").text(readTargetName());
     const entries = readTimeline().split("\n").filter((line) => line.trim()).length;
     $("#psychograph_sheet_timeline_count").text(`${entries} ${entries === 1 ? "entry" : "entries"}`);
-    renderAllKnowledgeTables();
+    renderKnowledgeGroups();
     renderSheetFooter();
 }
 
@@ -3093,27 +3095,87 @@ function escapeHtmlAttribute(value) {
     return String(value ?? "").replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
 
-function renderKnowledgeTable(layer) {
-    const entries = readKnowledgeEntries(layer);
-    const rows = entries.map((entry, index) => `
-        <tr data-index="${index}">
-            ${layer.fields.map((field) => `
-                <td><input type="text" class="psychograph-knowledge-input" data-field="${field}" value="${escapeHtmlAttribute(entry[field])}" /></td>
-            `).join("")}
-            <td><div class="psychograph-knowledge-delete fa-solid fa-xmark interactable" title="Delete entry" tabindex="0"></div></td>
-        </tr>
-    `).join("");
+// Collapsed state is per character and layer, and deliberately not persisted:
+// it is how the panel looks right now, not something about the chat.
+const collapsedKnowledgeSections = new Set();
 
-    $(`#psychograph_${layer.id}_rows`).html(rows);
-    $(`#psychograph_${layer.id}_empty`).toggleClass("shown", entries.length === 0);
-    $(`.psychograph-knowledge-table[data-tab="${layer.id}"]`).toggleClass("shown", entries.length > 0);
-    $(`#psychograph_${layer.id}_count`).text(`${entries.length} ${entries.length === 1 ? "entry" : "entries"}`);
+function knowledgeSectionKey(group, layerKey) {
+    return `${group}::${layerKey}`;
 }
 
-function renderAllKnowledgeTables() {
+const UNNAMED_KNOWLEDGE_GROUP = "Someone";
+
+// Groups in order of first appearance, across all three layers at once — the
+// sheet is read per character, not per layer.
+function collectKnowledgeGroups() {
+    const groups = new Map();
+
     for (const key of KNOWLEDGE_KEYS) {
-        renderKnowledgeTable(KNOWLEDGE_LAYERS[key]);
+        const layer = KNOWLEDGE_LAYERS[key];
+        readKnowledgeEntries(layer).forEach((entry, index) => {
+            const name = entry[layer.groupBy] || "";
+            if (!groups.has(name)) {
+                groups.set(name, Object.fromEntries(KNOWLEDGE_KEYS.map((layerKey) => [layerKey, []])));
+            }
+            groups.get(name)[key].push({ entry, index });
+        });
     }
+
+    return groups;
+}
+
+function buildKnowledgeEntryHtml(layerKey, { entry, index }) {
+    const layer = KNOWLEDGE_LAYERS[layerKey];
+    const fields = layer.fields
+        .filter((field) => field !== layer.groupBy)
+        .map((field) => `
+            <input type="text" class="psychograph-knowledge-input" data-field="${field}"
+                placeholder="${humanizeSlot(field).toLowerCase()}" value="${escapeHtmlAttribute(entry[field])}" />
+        `).join("");
+
+    return `
+        <div class="psychograph-knowledge-entry" data-layer="${layerKey}" data-index="${index}">
+            <div class="psychograph-knowledge-entry-fields">${fields}</div>
+            <div class="psychograph-knowledge-delete fa-solid fa-xmark interactable" title="Delete entry" tabindex="0"></div>
+        </div>
+    `;
+}
+
+function buildKnowledgeSectionHtml(group, layerKey, rows) {
+    const layer = KNOWLEDGE_LAYERS[layerKey];
+    const collapsed = collapsedKnowledgeSections.has(knowledgeSectionKey(group, layerKey)) || rows.length === 0;
+
+    return `
+        <div class="psychograph-knowledge-section${collapsed ? "" : " open"}" data-group="${escapeHtmlAttribute(group)}" data-layer="${layerKey}">
+            <div class="psychograph-knowledge-section-header interactable" tabindex="0">
+                <i class="fa-solid fa-chevron-${collapsed ? "right" : "down"}"></i>
+                <span>${layer.label}</span>
+                <span class="psychograph-sheet-count">${rows.length}</span>
+            </div>
+            <div class="psychograph-knowledge-entries">
+                ${rows.map((row) => buildKnowledgeEntryHtml(layerKey, row)).join("")}
+                <div class="psychograph-knowledge-add interactable" data-group="${escapeHtmlAttribute(group)}" data-layer="${layerKey}" tabindex="0">
+                    <i class="fa-solid fa-plus"></i> Add ${layer.label.toLowerCase().replace(/s$/, "")}
+                </div>
+            </div>
+        </div>
+    `;
+}
+
+function renderKnowledgeGroups() {
+    const groups = collectKnowledgeGroups();
+    const total = KNOWLEDGE_KEYS.reduce((sum, key) => sum + readKnowledgeEntries(KNOWLEDGE_LAYERS[key]).length, 0);
+
+    const html = [...groups.entries()].map(([group, rowsByLayer]) => `
+        <div class="psychograph-knowledge-group" data-group="${escapeHtmlAttribute(group)}">
+            <input type="text" class="psychograph-knowledge-group-name" value="${escapeHtmlAttribute(group)}"
+                placeholder="${UNNAMED_KNOWLEDGE_GROUP}" title="Renaming moves every entry below to that name" />
+            ${KNOWLEDGE_KEYS.map((key) => buildKnowledgeSectionHtml(group, key, rowsByLayer[key])).join("")}
+        </div>
+    `).join("");
+
+    $("#psychograph_knowledge_groups").html(html);
+    $("#psychograph_knowledge_count").text(`${total} ${total === 1 ? "entry" : "entries"}`);
 }
 
 function renderSheetFooter() {
@@ -3125,13 +3187,21 @@ function renderSheetFooter() {
     $("#psychograph_sheet_restore").toggleClass("disabled", !chatState.previous);
 }
 
+// The three layers share one set of buttons, so an action runs them in turn
+// rather than three times over: one press, one round of work.
+async function runForEveryKnowledgeLayer(action) {
+    for (const key of KNOWLEDGE_KEYS) {
+        await action(KNOWLEDGE_LAYERS[key]);
+    }
+}
+
 async function extractActiveSheetTabNow() {
     if (activeSheetTab === SHEET_TIMELINE_TAB) {
         await rerunTimelineExtractionNow();
         return;
     }
-    if (KNOWLEDGE_LAYERS[activeSheetTab]) {
-        await rerunKnowledgeExtractionNow(KNOWLEDGE_LAYERS[activeSheetTab]);
+    if (activeSheetTab === SHEET_KNOWLEDGE_TAB) {
+        await runForEveryKnowledgeLayer(rerunKnowledgeExtractionNow);
         return;
     }
     await rerunAreaExtractionNow(activeSheetTab);
@@ -3183,25 +3253,60 @@ function bindSheetEvents() {
 
     $("#psychograph_sheet_extract").on("click", extractActiveSheetTabNow);
     $("#psychograph_sheet_restore").on("click", restorePreviousState);
-    for (const key of KNOWLEDGE_KEYS) {
-        const layer = KNOWLEDGE_LAYERS[key];
-        $(`#psychograph_${key}_build`).on("click", () => buildKnowledge(layer));
-        $(`#psychograph_${key}_seed`).on("click", () => seedKnowledgeFromCardNow(layer));
-        $(`#psychograph_${key}_compact`).on("click", () => compactKnowledgeNow(layer));
+    $("#psychograph_knowledge_build").on("click", () => runForEveryKnowledgeLayer(buildKnowledge));
+    $("#psychograph_knowledge_seed").on("click", () => runForEveryKnowledgeLayer(seedKnowledgeFromCardNow));
+    $("#psychograph_knowledge_compact").on("click", () => runForEveryKnowledgeLayer(compactKnowledgeNow));
 
-        $(`#psychograph_${key}_add`).on("click", function () {
-            writeKnowledgeEntries(layer, [
-                ...readKnowledgeEntries(layer),
-                Object.fromEntries(layer.fields.map((field) => [field, ""])),
-            ]);
-            $(`#psychograph_${key}_rows tr:last-child .psychograph-knowledge-input`).first().trigger("focus");
-        });
-    }
+    $("#psychograph_knowledge_add_group").on("click", function () {
+        const layer = KNOWLEDGE_LAYERS[KNOWLEDGE_KEYS[0]];
+        writeKnowledgeEntries(layer, [
+            ...readKnowledgeEntries(layer),
+            Object.fromEntries(layer.fields.map((field) => [field, ""])),
+        ]);
+        $(".psychograph-knowledge-group").last().find(".psychograph-knowledge-group-name").trigger("focus");
+    });
 
-    // Delegated, so a re-render doesn't have to rebind every row.
+    panel.on("click", ".psychograph-knowledge-section-header", function () {
+        const section = $(this).closest(".psychograph-knowledge-section");
+        const key = knowledgeSectionKey(String(section.data("group")), String(section.data("layer")));
+        if (collapsedKnowledgeSections.has(key)) {
+            collapsedKnowledgeSections.delete(key);
+        } else {
+            collapsedKnowledgeSections.add(key);
+        }
+        renderKnowledgeGroups();
+    });
+
+    panel.on("click", ".psychograph-knowledge-add[data-layer]", function () {
+        const layer = KNOWLEDGE_LAYERS[String($(this).data("layer"))];
+        const group = String($(this).data("group"));
+        collapsedKnowledgeSections.delete(knowledgeSectionKey(group, layer.id));
+        writeKnowledgeEntries(layer, [
+            ...readKnowledgeEntries(layer),
+            Object.fromEntries(layer.fields.map((field) => [field, field === layer.groupBy ? group : ""])),
+        ]);
+    });
+
+    // Renaming moves every entry under that heading, across all three layers —
+    // fixing "Milly" to "Milena" once is the common case, and it merges the two
+    // groups as a side effect.
+    panel.on("change", ".psychograph-knowledge-group-name", function () {
+        const previous = String($(this).closest(".psychograph-knowledge-group").data("group"));
+        const name = String($(this).val()).trim();
+        captureUndoSnapshot("renaming a group");
+        for (const key of KNOWLEDGE_KEYS) {
+            const layer = KNOWLEDGE_LAYERS[key];
+            const entries = readKnowledgeEntries(layer).map((entry) =>
+                (entry[layer.groupBy] || "") === previous ? { ...entry, [layer.groupBy]: name } : entry);
+            ensureChatState().knowledge[key].entries = entries;
+        }
+        getContext().saveMetadataDebounced();
+        renderKnowledgeGroups();
+    });
+
     panel.on("input", ".psychograph-knowledge-input", function () {
-        const layer = KNOWLEDGE_LAYERS[String($(this).closest(".psychograph-sheet-pane").data("tab"))];
-        const index = Number($(this).closest("tr").data("index"));
+        const layer = KNOWLEDGE_LAYERS[String($(this).closest(".psychograph-knowledge-entry").data("layer"))];
+        const index = Number($(this).closest(".psychograph-knowledge-entry").data("index"));
         const entries = readKnowledgeEntries(layer);
         if (!entries[index]) {
             return;
@@ -3211,8 +3316,9 @@ function bindSheetEvents() {
     });
 
     panel.on("click", ".psychograph-knowledge-delete", function () {
-        const layer = KNOWLEDGE_LAYERS[String($(this).closest(".psychograph-sheet-pane").data("tab"))];
-        const index = Number($(this).closest("tr").data("index"));
+        const entryElement = $(this).closest(".psychograph-knowledge-entry");
+        const layer = KNOWLEDGE_LAYERS[String(entryElement.data("layer"))];
+        const index = Number(entryElement.data("index"));
         captureUndoSnapshot(`deleting a ${layer.label.toLowerCase()} entry`);
         writeKnowledgeEntries(layer, readKnowledgeEntries(layer).filter((_, position) => position !== index));
     });
