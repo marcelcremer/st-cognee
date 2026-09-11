@@ -672,25 +672,26 @@ function buildTriggerCompactionPrompt(numberedMap) {
     return buildPromptDocument([
         {
             heading: "# Task Description",
-            content: `You will see a numbered trigger map — the reference sheet of standing "whenever X happens, this character reliably does Y" patterns for the characters in a roleplay. Your job is to consolidate it, not to extend it.`,
+            content: `You will see a numbered trigger map — the standing "whenever X happens, this character reliably does Y" patterns of the characters in a roleplay. Your job is to find the entries that say the same thing twice and write one entry that replaces them. You are not rewriting the list.`,
         },
         {
             heading: "## The test",
             content: bulletList([
-                "Entries for the same character whose triggers describe the same condition belong in one entry. Its response must state everything the originals stated — join them, never pick one and drop the other.",
-                "Entries whose triggers describe different conditions stay separate, even when their responses are similar.",
-                "One entry may also absorb another when its trigger is the broader case of the other's, provided the merged response still covers both.",
-                "Nothing may be lost: every numbered entry below has to appear in the output, either on its own or folded into another.",
-                "Never invent a pattern that is not in the map below, and never merge across characters.",
+                "Two entries belong together when their triggers describe the same condition for the same character, or when one trigger is the broader case of the other.",
+                "Entries for different characters are never merged, and neither are two triggers whose conditions are genuinely different.",
+                "The merged response must state everything the originals stated — join them, never pick one and drop the other.",
+                "Report ONLY the groups you are merging. Every entry you do not mention stays exactly as it is — you never have to repeat it.",
+                "An entry belongs to at most one group, and a group has at least two entries.",
+                "Never invent anything that is not in the list below.",
                 "Reasoning is just for debug — one concise sentence is enough.",
             ]),
         },
         {
             heading: "## Output format",
-            content: `Respond with ONLY a JSON object (no markdown code fence), containing the full consolidated map, using exactly this shape:
-{"reasoning": "...", "entries": [{"character": "...", "trigger": "...", "response": "...", "merged_from": [1, 4]}]}
+            content: `Respond with ONLY a JSON object (no markdown code fence), using exactly this shape:
+{"reasoning": "...", "merges": [{"merged_from": [1, 4], "character": "...", "trigger": "...", "response": "..."}]}
 
-"merged_from" lists the numbers of the entries below that went into that entry. Every number below must appear in exactly one "merged_from".`,
+"merged_from" lists the numbers of the entries that went into that one. If nothing should be merged, use an empty array: {"reasoning": "...", "merges": []}`,
         },
     ], "", numberedMap);
 }
@@ -786,25 +787,26 @@ function buildFactCompactionPrompt(numberedMap) {
     return buildPromptDocument([
         {
             heading: "# Task Description",
-            content: "You will see a numbered list of facts about the people in a roleplay. Your job is to consolidate it, not to extend it.",
+            content: "You will see a numbered list of facts about the people in a roleplay. Your job is to find the entries that say the same thing twice and write one entry that replaces them. You are not rewriting the list.",
         },
         {
             heading: "## The test",
             content: bulletList([
-                "Two entries belong together when they state the same fact in different words. Merge those into one entry that states everything both stated.",
-                "Entries about different subjects, or about different relations, stay separate.",
-                "When two entries contradict each other, keep the one the later number states — a fact stated later replaces the same fact stated earlier.",
-                "Nothing may be lost: every numbered entry below has to appear in the output, either on its own or folded into another.",
-                "Never invent a fact that is not in the list below.",
+                "Two entries belong together when they state the same fact in different words, or when one is a narrower version of the other.",
+                "Entries about different subjects, or about different relations, are never merged.",
+                "When two entries contradict each other, merge them into what the entry with the higher number says — a fact stated later replaces the same fact stated earlier.",
+                "Report ONLY the groups you are merging. Every entry you do not mention stays exactly as it is — you never have to repeat it.",
+                "An entry belongs to at most one group, and a group has at least two entries.",
+                "Never invent anything that is not in the list below.",
                 "Reasoning is just for debug — one concise sentence is enough.",
             ]),
         },
         {
             heading: "## Output format",
-            content: `Respond with ONLY a JSON object (no markdown code fence), containing the full consolidated list, using exactly this shape:
-{"reasoning": "...", "entries": [{"subject": "...", "relation": "...", "object": "...", "merged_from": [1, 4]}]}
+            content: `Respond with ONLY a JSON object (no markdown code fence), using exactly this shape:
+{"reasoning": "...", "merges": [{"merged_from": [1, 4], "subject": "...", "relation": "...", "object": "..."}]}
 
-"merged_from" lists the numbers of the entries below that went into that entry. Every number below must appear in exactly one "merged_from".`,
+"merged_from" lists the numbers of the entries that went into that one. If nothing should be merged, use an empty array: {"reasoning": "...", "merges": []}`,
         },
     ], "", numberedMap);
 }
@@ -902,25 +904,26 @@ function buildDispositionCompactionPrompt(numberedMap) {
     return buildPromptDocument([
         {
             heading: "# Task Description",
-            content: "You will see a numbered list of the lasting dispositions of the characters in a roleplay. Your job is to consolidate it, not to extend it.",
+            content: "You will see a numbered list of the lasting dispositions of the characters in a roleplay. Your job is to find the entries that say the same thing twice and write one entry that replaces them. You are not rewriting the list.",
         },
         {
             heading: "## The test",
             content: bulletList([
-                "Entries for the same character that describe the same disposition in different words belong in one entry, which must state everything the originals stated.",
-                "Entries that describe different dispositions stay separate, even when they are about the same person or subject.",
-                "When a later entry supersedes an earlier one for the same character, keep what holds now.",
-                "Nothing may be lost: every numbered entry below has to appear in the output, either on its own or folded into another.",
-                "Never invent a disposition that is not in the list below, and never merge across characters.",
+                "Two entries belong together when they describe the same disposition of the same character in different words, or when one is a narrower version of the other.",
+                "Entries for different characters are never merged, and neither are two dispositions that would show up differently in behaviour.",
+                "When a later entry supersedes an earlier one for the same character, merge them into what holds now.",
+                "Report ONLY the groups you are merging. Every entry you do not mention stays exactly as it is — you never have to repeat it.",
+                "An entry belongs to at most one group, and a group has at least two entries.",
+                "Never invent anything that is not in the list below.",
                 "Reasoning is just for debug — one concise sentence is enough.",
             ]),
         },
         {
             heading: "## Output format",
-            content: `Respond with ONLY a JSON object (no markdown code fence), containing the full consolidated list, using exactly this shape:
-{"reasoning": "...", "entries": [{"character": "...", "disposition": "...", "merged_from": [1, 4]}]}
+            content: `Respond with ONLY a JSON object (no markdown code fence), using exactly this shape:
+{"reasoning": "...", "merges": [{"merged_from": [1, 4], "character": "...", "disposition": "..."}]}
 
-"merged_from" lists the numbers of the entries below that went into that entry. Every number below must appear in exactly one "merged_from".`,
+"merged_from" lists the numbers of the entries that went into that one. If nothing should be merged, use an empty array: {"reasoning": "...", "merges": []}`,
         },
     ], "", numberedMap);
 }
@@ -991,20 +994,41 @@ const KNOWLEDGE_LAYERS = {
 
 const KNOWLEDGE_KEYS = Object.keys(KNOWLEDGE_LAYERS);
 
-function buildKnowledgeSchema(layer, reasoningDescription, { withMergedFrom = false } = {}) {
+function buildKnowledgeMergeSchema(layer) {
+    const properties = Object.fromEntries(
+        layer.fields.map((field) => [field, { type: "string", description: layer.fieldDescriptions[field] }]),
+    );
+    properties.merged_from = {
+        type: "array",
+        description: "The numbers of the entries that go into this one. At least two.",
+        items: { type: "integer" },
+    };
+
+    return {
+        type: "object",
+        properties: {
+            reasoning: { type: "string", description: "One concise sentence on what is being merged, before answering." },
+            merges: {
+                type: "array",
+                description: "One object per group being merged. Empty when nothing should be merged.",
+                items: {
+                    type: "object",
+                    properties,
+                    required: ["merged_from", ...layer.fields],
+                    additionalProperties: false,
+                },
+            },
+        },
+        required: ["reasoning", "merges"],
+        additionalProperties: false,
+    };
+}
+
+function buildKnowledgeSchema(layer, reasoningDescription) {
     const properties = Object.fromEntries(
         layer.fields.map((field) => [field, { type: "string", description: layer.fieldDescriptions[field] }]),
     );
     const required = [...layer.fields];
-
-    if (withMergedFrom) {
-        properties.merged_from = {
-            type: "array",
-            description: "The numbers of the input entries that went into this one.",
-            items: { type: "integer" },
-        };
-        required.push("merged_from");
-    }
 
     return {
         type: "object",
@@ -2159,6 +2183,42 @@ async function seedKnowledgeFromCard(layer, profileId) {
     return added;
 }
 
+// Only the groups being merged come back, so an entry the model does not
+// mention is kept by construction rather than by a repair pass — it never
+// passes through the generator at all, which is what keeps wording from
+// drifting on entries nobody asked to change.
+function applyKnowledgeMerges(layer, before, merges) {
+    const used = new Set();
+    const mergedAt = new Map();
+
+    for (const merge of merges) {
+        const positions = [...new Set(merge.mergedFrom)]
+            .map((number) => number - 1)
+            .filter((position) => position >= 0 && position < before.length && !used.has(position));
+        if (positions.length < 2) {
+            console.warn(`[Psychograph] ${layer.label} compaction: ignoring a group that covers fewer than two untouched entries.`, merge);
+            continue;
+        }
+
+        for (const position of positions) {
+            used.add(position);
+        }
+        mergedAt.set(Math.min(...positions), Object.fromEntries(layer.fields.map((field) => [field, merge[field]])));
+    }
+
+    // Rebuilt in the original order, with each group collapsed onto the
+    // position of its first member.
+    const after = [];
+    before.forEach((entry, position) => {
+        if (mergedAt.has(position)) {
+            after.push(mergedAt.get(position));
+        } else if (!used.has(position)) {
+            after.push(entry);
+        }
+    });
+    return after;
+}
+
 async function compactKnowledge(layer, profileId) {
     const chatState = ensureChatState();
     const before = readKnowledgeEntries(layer);
@@ -2170,15 +2230,15 @@ async function compactKnowledge(layer, profileId) {
         const result = await sendJsonSchemaRequest(
             profileId,
             `${layer.id}_compaction`,
-            buildKnowledgeSchema(layer, "One concise sentence on what was merged, before answering.", { withMergedFrom: true }),
+            buildKnowledgeMergeSchema(layer),
             layer.buildCompactionPrompt(renderKnowledgeNumbered(layer)),
-            // The answer carries the whole list, so the budget has to grow with
-            // it or the JSON is cut off mid-entry on a list of any size.
-            Math.max(600, before.length * 80),
+            // Only the merges come back, so this scales with how much is
+            // duplicated rather than with how long the list is.
+            Math.max(400, before.length * 20),
         );
         console.log(`[Psychograph] ${layer.label} compaction reasoning:`, result.reasoning);
 
-        const compacted = (Array.isArray(result.entries) ? result.entries : [])
+        const merges = (Array.isArray(result.merges) ? result.merges : [])
             .map((raw) => {
                 const entry = readKnowledgeEntry(layer, raw);
                 if (!entry) {
@@ -2186,32 +2246,24 @@ async function compactKnowledge(layer, profileId) {
                 }
                 entry.mergedFrom = (Array.isArray(raw.merged_from) ? raw.merged_from : [])
                     .map((number) => Number(number))
-                    .filter((number) => Number.isInteger(number) && number >= 1 && number <= before.length);
+                    .filter((number) => Number.isInteger(number));
                 return entry;
             })
             .filter(Boolean);
-
-        const covered = new Set(compacted.flatMap((entry) => entry.mergedFrom));
-        // No usable bookkeeping at all means the model ignored the format, and
-        // its output cannot be trusted to have kept anything — whereas a few
-        // missing numbers is a normal miss worth repairing. This is the one
-        // call that rewrites existing entries, so the difference matters.
-        if (compacted.length === 0 || covered.size === 0) {
-            console.warn(`[Psychograph] ${layer.label} compaction came back unusable, keeping the list as it was.`);
+        if (merges.length === 0) {
             return false;
         }
         if (!isCurrentChatState(chatState)) {
             return false;
         }
 
-        const dropped = before.filter((_, index) => !covered.has(index + 1));
-        if (dropped.length > 0) {
-            console.warn(`[Psychograph] ${layer.label} compaction left entries unaccounted for, keeping them unchanged:`, dropped);
+        const after = applyKnowledgeMerges(layer, before, merges);
+        if (after.length === before.length) {
+            return false;
         }
 
-        const merged = compacted.map((entry) => Object.fromEntries(layer.fields.map((field) => [field, entry[field]])));
-        writeKnowledgeEntries(layer, [...merged, ...dropped]);
-        console.log(`[Psychograph] ${layer.label} compacted from ${before.length} to ${readKnowledgeEntries(layer).length} entries.`);
+        writeKnowledgeEntries(layer, after);
+        console.log(`[Psychograph] ${layer.label} compacted from ${before.length} to ${after.length} entries.`);
         return true;
     } catch (error) {
         console.error(`[Psychograph] ${layer.label} compaction failed:`, error);
