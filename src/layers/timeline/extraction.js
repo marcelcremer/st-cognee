@@ -1,6 +1,6 @@
 import { getContext } from "../../sillytavern.js";
 import { ensureChatState, isCurrentChatState } from "../../chat-state.js";
-import { refreshTimelineInject } from "../../injects.js";
+import { refreshContextInject } from "../../injects.js";
 import { NO_PROFILE_WARNING, sendJsonSchemaRequest } from "../../llm/request.js";
 import { isTimelineExtracted, isTimelineMessage, markTimelineExtracted, readMessageSpeaker } from "../../messages.js";
 import { buildTimelineKeepPrompt, buildTimelineKeepSchema, buildTimelinePrompt, buildTimelineSchema } from "../../prompts/timeline.js";
@@ -74,7 +74,7 @@ export async function extractTimelineForNewMessage(settings, profileId) {
     markTimelineExtracted(message);
 
     await queueTimelineWork(() => extractTimelineEntry(profileId, message));
-    await refreshTimelineInject();
+    await refreshContextInject();
 }
 
 let timelineBuildRunning = false;

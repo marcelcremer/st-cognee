@@ -71,3 +71,16 @@ export function markKnowledgeExtracted(layer, message) {
     message.extra[knowledgeExtractedKey(layer)] = true;
     getContext().saveMetadataDebounced();
 }
+
+const MOTIVATION_ROLL_KEY = "psychographMotivation";
+
+// Which driver produced this message. Nothing reads it yet - it is the record
+// the disposition layer needs, and only the turn that rolled it can write it.
+export function markMotivationRoll(message, roll) {
+    if (!message) {
+        return;
+    }
+    message.extra = message.extra || {};
+    message.extra[MOTIVATION_ROLL_KEY] = { driver: roll.driver, continuation: roll.continuation };
+    getContext().saveMetadataDebounced();
+}

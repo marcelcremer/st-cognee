@@ -88,7 +88,8 @@ never a walkthrough of the code itself.
 
 ## Extraction prompt wording
 
-The wording of LLM extraction prompts (everything under `src/prompts/`, and
+The wording of LLM extraction prompts (everything under `src/prompts/`, the
+driver and continuation text in `src/layers/motivation/drivers.js`, and
 any future prompt built the same way) is tuned empirically against the user's own backend/model, not
 derived from first principles. Small local models are highly sensitive to
 phrasing in ways that aren't obvious from reading the prompt — an "improvement"
@@ -188,6 +189,7 @@ together on jQuery ready. Everything else lives under `src/`:
 | `src/layers/state/` | `areas.js` — the 14 slots across 3 areas and their per-area config. `extraction.js` — the gate -> diff -> per-slot-update pipeline. |
 | `src/layers/timeline/` | `store.js` — the timeline blob and its work queue. `extraction.js` — per-message entries and the full rebuild. |
 | `src/layers/knowledge/` | `layers.js` — the three layer configurations (facts, dispositions, triggers). `store.js` — entry lists, dedup and merge. `extraction.js` — the model calls, card seeding and the rebuild. |
+| `src/layers/motivation/` | `drivers.js` — the eight drivers, the five continuation rules, the standing goal block, and the inject they build. `lottery.js` — the per-turn draw, the lock, the chat's goal, and the roll recorded on each message. |
 | `src/layers/cognee.js` | The Cognee client: chat-scoped datasets, ingestion, backfill, recall. |
 | `src/injects.js` | Every `setExtensionPrompt` the memory layers make, and the generation hook that refreshes them. |
 | `src/ui/` | `settings-panel.js`, `sheet.js`, `guided.js`, `toolbar.js`. |

@@ -215,6 +215,28 @@ three genuinely different insertion points, not interchangeable:
   Completion). This is a **separate mechanism** from the Context Template
   above and does not populate any of its fields.
 
+Two consequences of how `getExtensionPrompt` assembles several injects at the
+same position:
+
+```js
+let values = prompts.map(x => x.value.trim()).join(separator);
+```
+
+- Values are joined with a **single** newline (`separator` is `'\n'` for the
+  story-string anchors), and **each value is trimmed** first. So a blank line
+  between two injects cannot be produced from inside either one - a trailing or
+  leading newline is removed before the join. An extension that wants its
+  sections separated by a blank line has to put them in one inject.
+- The order is `Object.keys(extension_prompts).sort()`, i.e. alphabetical by
+  inject id. Two injects whose relative order matters must not rely on it.
+
+`processChatSlashCommands()` rehydrates every entry of
+`chat_metadata.script_injects` when a chat loads. `ephemeral=true` deletes that
+entry on `GENERATION_ENDED`/`GENERATION_STOPPED`, but a generation that never
+ended leaves the entry in the chat file, and it comes back on the next load.
+Renaming or retiring an inject id therefore needs a one-time flush of the old
+id, or its stale text keeps being injected.
+
 `wiBefore`/`wiAfter` in the Context Template are populated only from
 activated World Info/lorebook entries (`getWorldInfoPrompt`) — there is no
 `/inject` position that lands there; an extension would have to manage an
@@ -225,6 +247,38 @@ completely absent from what a prompt inspector shows for the Context
 Template/system-prompt block, even though the `/inject` call itself
 succeeded - it went into the chat-history splice point instead, which is
 outside that template entirely.
+
+## `/inject role=` and `depth=0` (verified against SillyTavern 1.18 source)
+
+`injectCallback` (`public/scripts/slash-commands.js`) accepts
+`role=system|user|assistant` and defaults to SYSTEM. What each becomes:
+
+- Chat Completion (`populationInjectionPrompts`, `public/scripts/openai.js`):
+  a real `{ role, content }` message, spliced into the history array. The
+  function reverses the array, splices at index = depth, and reverses back, so
+  `depth=0` is the **last** message of the final array.
+- Text Completion (`doChatInject`, `public/script.js`): a synthetic chat
+  message. `role=system` gives it `extra.type = 'narrator'` and an empty name,
+  which is what makes instruct mode wrap it in the system sequence; `user`/
+  `assistant` borrow `name1`/`name2`.
+
+Two consequences worth knowing:
+
+- The default Chat Completion preset orders `… dialogueExamples, chatHistory,
+  jailbreak`, so a `depth=0` inject sits after the last message but *before*
+  the post-history instructions.
+- On **continue**, `doChatInject` silently bumps `depth=0` to 1 so the inject
+  cannot cut into the message being continued. A depth-0 inject is therefore
+  one message further back on a continue than on a normal turn.
+
+This is the position to use for anything that changes every turn: the Context
+Template (`position=before`/`after`) sits in front of the whole chat, so a
+value that differs per generation invalidates the prompt cache from the story
+string onwards. At `depth=0` only the new content is new.
+
+`getExtensionPrompt` runs `substituteParams` over the assembled value, so
+macros like `{{char}}` in an inject survive to prompt-build time no matter
+whether stscript already substituted them when the command ran.
 
 ## What `is_system` actually means on a chat message
 

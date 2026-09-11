@@ -243,6 +243,15 @@
     resize: vertical;
 }
 
+.psychograph-sheet-section {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    margin-top: 0.6em;
+    padding-top: 0.6em;
+    border-top: 1px solid var(--SmartThemeBorderColor, var(--SmartThemeBodyColor));
+}
+
 .psychograph-sheet-footer {
     display: flex;
     align-items: center;
