@@ -65,6 +65,33 @@ extra stage is one call that can suppress three.
 A failed gate extracts nothing rather than everything: a broken gate should not
 produce the most expensive and least informed run of the pipeline.
 
+**Clothes: observation instead of a boolean diff.** The diff already worked out
+which item belongs in which slot — its reasoning would read "footwear (foam
+slides), accessories (choker)" — and the pipeline kept one boolean of it. The
+per-slot update then had to find the item again, without the slot definitions
+the diff carries in its schema and without the per-slot walk its reasoning
+description forces; on an empty sheet it answered four slots with the whole
+outfit. Clothes therefore asks for a value per slot, and the decision moves into
+code:
+
+- `"not mentioned"` leaves the slot alone.
+- An observed value that meets an *empty* slot is written straight in. There is
+  nothing to merge, so there is nothing to ask.
+- An observed value equal to what is there does nothing.
+- Only a slot that already holds something different reaches stage 3, which is
+  the one question that needs a model: does the new item replace what is there,
+  or layer over it?
+
+An opening scene on an empty sheet costs two calls instead of nine, and the
+seven values come from the call that already had them right.
+
+Two shapes were tried and rejected against the 4B this is tuned for. Asking what
+*changed* returns nothing on an opening scene, because such a scene describes an
+outfit without changing it. Putting the sheet into that prompt made the model
+claim the message's items were already on it. The observation prompt therefore
+asks what the message *says*, and never sees the sheet — which is also why it
+cannot invent its contents.
+
 **Merge.** Stage 3 sees the current value, so it can produce the new value
 directly. An earlier design had the extraction run observation-only, without the
 previous state, which is why it needed sentinels for "no info" and an explicit

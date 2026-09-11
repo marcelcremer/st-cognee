@@ -10,7 +10,9 @@ system for roleplay chats:
 1. **State** — a mutable snapshot (clothing, body, scene), overwritten on
    every message. The only layer that exists today: 14 slots in 3 areas,
    extracted by a gate -> per-area diff -> per-slot update pipeline and
-   injected as `## Current state information`.
+   injected as `## Current state information`. Clothes runs an observation
+   call in place of the boolean diff, and only calls the model per slot when
+   what it observed has to be merged with a slot that is already filled.
 2. **Dispositions / Episodes** — what a character has come to believe, and the
    events behind it. Designed, not built.
 3. **Lore/Graph** — a knowledge graph of relationships between characters,

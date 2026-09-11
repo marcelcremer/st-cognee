@@ -5,10 +5,10 @@ import { STATE_LANE, runInLane } from "../../extraction-queue.js";
 import { refreshContextInject } from "../../injects.js";
 import { NO_PROFILE_WARNING, sendJsonSchemaRequest, warnOnce } from "../../llm/request.js";
 import { isStateExtracted, isStoryMessage, markStateExtracted, readMessageSpeaker } from "../../messages.js";
-import { buildAreaDiffPrompt, buildAreaDiffSchema, buildAreaGatePrompt, buildAreaGateSchema, buildAreaSlotUpdatePrompt, buildAreaSlotUpdateSchema } from "../../prompts/state.js";
+import { NOT_MENTIONED, buildAreaDiffPrompt, buildAreaDiffSchema, buildAreaGatePrompt, buildAreaGateSchema, buildAreaObservationPrompt, buildAreaObservationSchema, buildAreaSlotUpdatePrompt, buildAreaSlotUpdateSchema } from "../../prompts/state.js";
 import { ensureSettings } from "../../settings.js";
 import { captureUndoSnapshot, noteLastExtraction } from "../../undo.js";
-import { AREA_DIFF_MAX_TOKENS, AREA_GATE_MAX_TOKENS, AREA_SLOT_CONFIGS, AREA_SLOT_UPDATE_MAX_TOKENS, EMPTY_SLOT_ANSWERS } from "./areas.js";
+import { AREA_DIFF_MAX_TOKENS, AREA_GATE_MAX_TOKENS, AREA_OBSERVATION_MAX_TOKENS, AREA_SLOT_CONFIGS, AREA_SLOT_UPDATE_MAX_TOKENS, EMPTY_SLOT_ANSWERS } from "./areas.js";
 
 async function runAreaGate(profileId, eligibleAreaKeys, message, speaker) {
     if (eligibleAreaKeys.length === 0) {
@@ -93,11 +93,61 @@ async function askAreaDiff(areaKey, message, speaker, mode = MESSAGE_MODE) {
     return changedSlots;
 }
 
+// Reports a value per slot rather than a boolean, so the answer the model
+// already works out while deciding "did this change" is kept instead of thrown
+// away. The sheet is deliberately not in this prompt: handed one, the same model
+// claimed the message's items were already on it and reported no change.
+async function askAreaObservation(areaKey, message, speaker) {
+    const profileId = resolveExtractionProfile(areaKey);
+    if (!profileId) {
+        return [];
+    }
+
+    const config = AREA_SLOT_CONFIGS[areaKey];
+    try {
+        const observation = await sendJsonSchemaRequest(
+            profileId,
+            `${areaKey}_observation`,
+            buildAreaObservationSchema(config, config.slots),
+            buildAreaObservationPrompt(config, config.slots, message, speaker),
+            AREA_OBSERVATION_MAX_TOKENS,
+        );
+        console.log(`[Psychograph] ${config.label} observation reasoning:`, observation.reasoning);
+
+        const seen = config.slots
+            .map((slot) => ({ slot, observed: String(observation[slot] ?? "").trim() }))
+            .filter(({ observed }) => observed && observed.toLowerCase() !== NOT_MENTIONED);
+        console.log(
+            `[Psychograph] ${config.label} observed:`,
+            seen.length ? seen.map(({ slot, observed }) => `${slot}=${observed}`).join(" | ") : "nothing",
+        );
+        return seen;
+    } catch (error) {
+        console.error(`[Psychograph] ${config.label} observation call failed:`, error);
+        return [];
+    }
+}
+
+// An area that carries observation wording uses it for messages; seeding reads a
+// profile rather than a scene, so it stays on the diff either way.
+async function askAreaEntries(areaKey, message, speaker, mode = MESSAGE_MODE) {
+    const config = AREA_SLOT_CONFIGS[areaKey];
+    if (config.observation && mode === MESSAGE_MODE) {
+        return askAreaObservation(areaKey, message, speaker);
+    }
+    return (await askAreaDiff(areaKey, message, speaker, mode)).map((slot) => ({ slot, observed: null }));
+}
+
+function isEmptySlotValue(value) {
+    const text = String(value ?? "").trim();
+    return !text || EMPTY_SLOT_ANSWERS.has(text.toLowerCase());
+}
+
 // The writing half: each call is handed the slot's current value and overwrites
 // it, so this is what has to take its turn per message.
-async function applyAreaSlots(areaKey, changedSlots, message, speaker, mode = MESSAGE_MODE) {
+async function applyAreaSlots(areaKey, entries, message, speaker, mode = MESSAGE_MODE) {
     const profileId = resolveExtractionProfile(areaKey);
-    if (!profileId || changedSlots.length === 0) {
+    if (!profileId || entries.length === 0) {
         return;
     }
 
@@ -107,9 +157,30 @@ async function applyAreaSlots(areaKey, changedSlots, message, speaker, mode = ME
         return;
     }
 
+    const writeSlot = (slot, value) => {
+        chatState.areas[areaKey].slots[slot] = value;
+        $(`#psychograph_state_${config.id}_slot_${slot}`).val(value);
+    };
+
     const slotUpdateSchema = buildAreaSlotUpdateSchema(config, mode);
-    await Promise.all(changedSlots.map(async (slot) => {
+    await Promise.all(entries.map(async ({ slot, observed }) => {
         const currentState = chatState.areas[areaKey].slots[slot] || config.slotDefaultSentinel(slot);
+
+        // Merging is the only question a model is needed for. An observed value
+        // meeting an empty slot has nothing to merge with, and one that matches
+        // what is already there has nothing to do.
+        if (observed) {
+            const value = normalizeSlotValue(config, observed);
+            if (value === currentState) {
+                return;
+            }
+            if (isEmptySlotValue(currentState)) {
+                console.log(`[Psychograph] ${config.label} "${slot}" was empty, writing the observed value without a call.`);
+                writeSlot(slot, value);
+                return;
+            }
+        }
+
         const updatePrompt = buildAreaSlotUpdatePrompt(config, slot, currentState, message, speaker, mode);
 
         try {
@@ -125,9 +196,7 @@ async function applyAreaSlots(areaKey, changedSlots, message, speaker, mode = ME
                 console.warn(`[Psychograph] Chat changed during the ${config.label} update for "${slot}", discarding the result.`);
                 return;
             }
-            const value = normalizeSlotValue(config, update.state);
-            chatState.areas[areaKey].slots[slot] = value;
-            $(`#psychograph_state_${config.id}_slot_${slot}`).val(value);
+            writeSlot(slot, normalizeSlotValue(config, update.state));
         } catch (error) {
             console.error(`[Psychograph] ${config.label} update call failed for slot "${slot}":`, error);
         }
@@ -141,7 +210,7 @@ async function applyAreaSlots(areaKey, changedSlots, message, speaker, mode = ME
 }
 
 async function runAreaExtraction(areaKey, message, speaker, mode = MESSAGE_MODE) {
-    await applyAreaSlots(areaKey, await askAreaDiff(areaKey, message, speaker, mode), message, speaker, mode);
+    await applyAreaSlots(areaKey, await askAreaEntries(areaKey, message, speaker, mode), message, speaker, mode);
 }
 
 // Gate first, then one diff per area it let through - all of it message-only,
@@ -150,9 +219,9 @@ async function askStateChanges(profileId, eligibleAreaKeys, message, speaker) {
     const gatedAreaKeys = await runAreaGate(profileId, eligibleAreaKeys, message, speaker);
     const perArea = await Promise.all(gatedAreaKeys.map(async (areaKey) => ({
         areaKey,
-        changedSlots: await askAreaDiff(areaKey, message, speaker),
+        entries: await askAreaEntries(areaKey, message, speaker),
     })));
-    return perArea.filter(({ changedSlots }) => changedSlots.length > 0);
+    return perArea.filter(({ entries }) => entries.length > 0);
 }
 
 // Two overlapping runs would read the same slot values as their base and write
@@ -210,8 +279,8 @@ export function extractStateForNewMessage(settings, profileId) {
 
         noteLastExtraction(message, "state");
         const changes = await asked;
-        await Promise.all(changes.map(({ areaKey, changedSlots }) =>
-            applyAreaSlots(areaKey, changedSlots, message.mes, speaker)));
+        await Promise.all(changes.map(({ areaKey, entries }) =>
+            applyAreaSlots(areaKey, entries, message.mes, speaker)));
         await refreshContextInject();
     });
 }
@@ -272,8 +341,8 @@ export async function rereadMessageForState(messageId) {
     const asked = askStateChanges(settings.connectionProfile, areaKeys, message.mes, speaker);
     await runInLane(STATE_LANE, async () => {
         const changes = await asked;
-        await Promise.all(changes.map(({ areaKey, changedSlots }) =>
-            applyAreaSlots(areaKey, changedSlots, message.mes, speaker)));
+        await Promise.all(changes.map(({ areaKey, entries }) =>
+            applyAreaSlots(areaKey, entries, message.mes, speaker)));
         noteLastExtraction(message, "state");
         await refreshContextInject();
         toastr[changes.length === 0 ? "info" : "success"](
