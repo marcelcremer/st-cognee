@@ -1,6 +1,7 @@
 import { extensionFolderPath } from "./src/constants.js";
 import { bindChatEvents } from "./src/events.js";
 import { bindSettingsEvents, populateConnectionProfiles, renderSettings } from "./src/ui/settings-panel.js";
+import { buildMessageButtons } from "./src/ui/message-buttons.js";
 import { bindSheetEvents, buildSheetPanel } from "./src/ui/sheet.js";
 import { buildToolbarButton } from "./src/ui/toolbar.js";
 
@@ -13,6 +14,7 @@ jQuery(async () => {
     bindSheetEvents();
     bindChatEvents();
     buildToolbarButton();
+    buildMessageButtons();
     renderSettings();
     populateConnectionProfiles();
 });
