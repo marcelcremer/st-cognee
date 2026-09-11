@@ -3,8 +3,8 @@ import { ensureChatState, readTargetName } from "./chat-state.js";
 import { getCogneeChatId, recallFromCognee } from "./layers/cognee.js";
 import { KNOWLEDGE_KEYS, KNOWLEDGE_LAYERS } from "./layers/knowledge/layers.js";
 import { readKnowledgeEntries } from "./layers/knowledge/store.js";
-import { buildMotivationInject } from "./layers/motivation/drivers.js";
-import { nextMotivationRoll } from "./layers/motivation/lottery.js";
+import { buildGoalInject, buildMotivationInject } from "./layers/motivation/drivers.js";
+import { nextMotivationRoll, readMotivationGoal } from "./layers/motivation/lottery.js";
 import { AREA_SLOT_CONFIGS, STATE_AREAS } from "./layers/state/areas.js";
 import { readTimeline } from "./layers/timeline/store.js";
 import { ensureSettings } from "./settings.js";
@@ -181,7 +181,11 @@ async function refreshMotivationInject() {
         return;
     }
 
-    const snapshot = buildMotivationInject(nextMotivationRoll());
+    const goal = readMotivationGoal();
+    const snapshot = [
+        goal.enabled ? buildGoalInject(sanitizeInjectValue(goal.text)) : "",
+        buildMotivationInject(nextMotivationRoll()),
+    ].filter(Boolean).join("\n\n");
     if (!snapshot) {
         await flushMotivationInject();
         return;

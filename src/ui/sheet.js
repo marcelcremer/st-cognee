@@ -4,7 +4,7 @@ import { buildAllKnowledge, rerunKnowledgeExtractionNow } from "../layers/knowle
 import { KNOWLEDGE_KEYS, KNOWLEDGE_LAYERS } from "../layers/knowledge/layers.js";
 import { readKnowledgeEntries, writeKnowledgeEntries } from "../layers/knowledge/store.js";
 import { MOTIVATION_CONTINUATIONS, MOTIVATION_DRIVERS } from "../layers/motivation/drivers.js";
-import { readMotivationRoll, rollMotivation, writeMotivationLock, writeMotivationSelection } from "../layers/motivation/lottery.js";
+import { readMotivationRoll, rollMotivation, writeMotivationGoal, writeMotivationLock, writeMotivationSelection } from "../layers/motivation/lottery.js";
 import { AREA_SLOT_CONFIGS, STATE_AREAS } from "../layers/state/areas.js";
 import { rerunAreaExtractionNow } from "../layers/state/extraction.js";
 import { rerunTimelineExtractionNow } from "../layers/timeline/extraction.js";
@@ -89,6 +89,18 @@ function buildSheetMotivationPaneHtml() {
                 <select id="psychograph_motivation_driver" class="text_pole">${buildMotivationOptionsHtml(MOTIVATION_DRIVERS)}</select>
                 <label for="psychograph_motivation_continuation">Continuation</label>
                 <select id="psychograph_motivation_continuation" class="text_pole">${buildMotivationOptionsHtml(MOTIVATION_CONTINUATIONS)}</select>
+            </div>
+            <div class="psychograph-sheet-section">
+                <div class="psychograph-sheet-pane-header">
+                    <label class="checkbox_label" for="psychograph_motivation_goal_enabled">
+                        <input id="psychograph_motivation_goal_enabled" type="checkbox" />
+                        Goal
+                    </label>
+                </div>
+                <small class="psychograph-sheet-hint">Injected ahead of the driver, where it carries less weight: a standing thread, not what this turn runs on.</small>
+                <div class="psychograph-sheet-fields">
+                    <textarea id="psychograph_motivation_goal" class="text_pole textarea_compact" rows="3" placeholder="what they are quietly pursuing, in one sentence"></textarea>
+                </div>
             </div>
         </div>
     `;
@@ -267,6 +279,8 @@ function selectSheetTab(tab) {
 
 export function renderMotivationRoll() {
     const motivation = readMotivationRoll();
+    $("#psychograph_motivation_goal_enabled").prop("checked", motivation.goal.enabled);
+    $("#psychograph_motivation_goal").val(motivation.goal.text);
     $("#psychograph_motivation_enabled").prop("checked", ensureSettings().motivation.enabled);
     $("#psychograph_motivation_locked").prop("checked", motivation.locked);
     $("#psychograph_motivation_driver").val(motivation.driver);
@@ -438,6 +452,14 @@ export function bindSheetEvents() {
 
     $("#psychograph_motivation_locked").on("change", function () {
         writeMotivationLock($(this).prop("checked"));
+    });
+
+    $("#psychograph_motivation_goal_enabled").on("change", function () {
+        writeMotivationGoal("enabled", $(this).prop("checked"));
+    });
+
+    $("#psychograph_motivation_goal").on("input", function () {
+        writeMotivationGoal("text", String($(this).val()));
     });
 
     for (const field of ["driver", "continuation"]) {

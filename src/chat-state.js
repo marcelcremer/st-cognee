@@ -51,6 +51,9 @@ export function ensureChatState() {
     chatState.motivation.driver = chatState.motivation.driver || "";
     chatState.motivation.continuation = chatState.motivation.continuation || "";
     chatState.motivation.locked = Boolean(chatState.motivation.locked);
+    chatState.motivation.goal = chatState.motivation.goal || {};
+    chatState.motivation.goal.enabled = Boolean(chatState.motivation.goal.enabled);
+    chatState.motivation.goal.text = chatState.motivation.goal.text || "";
     chatState.knowledge = chatState.knowledge || {};
     for (const key of KNOWLEDGE_KEYS) {
         // Chats written before the other two layers existed carry the trigger

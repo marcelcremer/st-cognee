@@ -31,6 +31,15 @@ export function nextMotivationRoll() {
     return rollMotivation();
 }
 
+export function readMotivationGoal() {
+    return readMotivationRoll().goal;
+}
+
+export function writeMotivationGoal(field, value) {
+    readMotivationGoal()[field] = value;
+    getContext().saveMetadataDebounced();
+}
+
 export function writeMotivationSelection(field, key) {
     readMotivationRoll()[field] = key;
     getContext().saveMetadataDebounced();
