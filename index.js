@@ -2320,8 +2320,28 @@ async function buildTimeline() {
 // no route for either, and its one vector endpoint applies the threshold on the
 // server and returns no scores, which is exactly what makes a threshold
 // impossible to calibrate.
+// A page served over HTTPS cannot call a plain-HTTP host: the browser blocks it
+// as mixed content before the request leaves, and all fetch reports back is
+// "Failed to fetch". localhost is exempt, browsers treat it as trustworthy.
+function describeMixedContent(baseUrl) {
+    try {
+        const target = new URL(baseUrl);
+        const isLocal = ["localhost", "127.0.0.1", "[::1]", "::1"].includes(target.hostname);
+        if (window.location.protocol === "https:" && target.protocol === "http:" && !isLocal) {
+            return `${target.host} is plain HTTP and this page is HTTPS, so the browser blocks the request before it is sent. Serve it over HTTPS, or proxy it under this origin.`;
+        }
+    } catch (error) {
+        return "The base URL is not a valid URL.";
+    }
+    return "";
+}
+
 async function similarityRequest(path, body) {
     const settings = ensureSettings().similarity;
+    const blocked = describeMixedContent(settings.baseUrl);
+    if (blocked) {
+        throw new Error(blocked);
+    }
     const headers = { "Content-Type": "application/json" };
     if (settings.apiKey) {
         // Two spellings, because llama.cpp reads the first and TabbyAPI the
@@ -2393,6 +2413,12 @@ async function testSimilarityService() {
     const status = $("#psychograph_similarity_status");
     if (!settings.baseUrl) {
         status.text("Set the base URL first.");
+        return;
+    }
+
+    const blocked = describeMixedContent(settings.baseUrl);
+    if (blocked) {
+        status.text(blocked);
         return;
     }
 
