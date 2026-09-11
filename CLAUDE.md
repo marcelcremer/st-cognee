@@ -193,7 +193,7 @@ together on jQuery ready. Everything else lives under `src/`:
 | `src/layers/motivation/` | `drivers.js` — the eight drivers, the five continuation rules, the standing goal block, and the inject they build. `lottery.js` — the per-turn draw, the lock, the chat's goal, and the roll recorded on each message. |
 | `src/layers/cognee.js` | The Cognee client: chat-scoped datasets, ingestion, backfill, recall. |
 | `src/injects.js` | Every `setExtensionPrompt` the memory layers make, and the generation hook that refreshes them. |
-| `src/ui/` | `settings-panel.js`, `sheet.js`, `guided.js`, `toolbar.js`. |
+| `src/ui/` | `settings-panel.js`, `sheet.js`, `guided.js`, `toolbar.js`, `message-buttons.js`. |
 | `src/events.js` | The SillyTavern event bindings. |
 
 Two conventions worth keeping:

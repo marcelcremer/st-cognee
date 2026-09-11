@@ -40,11 +40,22 @@ export function buildToolbarButton() {
     $("#psychograph_menu_button").on("click", toggleSheetPanel);
 }
 
+let missingActivityReported = false;
+
 // Never the hidden attribute: this element sits in SillyTavern's own button row
 // and any author-level display rule would silently win over it. See
 // docs/sillytavern-ui-notes.md.
 export function renderExtractionActivity(pending) {
-    $("#psychograph_activity")
+    const activity = $("#psychograph_activity");
+    if (activity.length === 0) {
+        if (!missingActivityReported) {
+            missingActivityReported = true;
+            console.warn("[Psychograph] #psychograph_activity is not in the DOM, so the spinner cannot show. A stale cached toolbar.js is the usual cause.");
+        }
+        return;
+    }
+
+    activity
         .toggleClass("shown", pending > 0)
         .attr("title", pending === 1
             ? "Psychograph is reading 1 message"

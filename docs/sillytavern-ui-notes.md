@@ -143,6 +143,21 @@ extensions' buttons to land in together unless you deliberately couple to
 another specific extension's container ID (fragile — avoid; it breaks the
 moment that extension is absent or changes its own markup).
 
+## Adding a button to every message
+
+`#message_template` is the markup every message is rendered from, and
+`.extraMesButtons` inside it is the row behind the "..." message-actions hint.
+A button added to the template shows up on every message rendered afterwards -
+including all of them again after a chat switch, since the chat is re-rendered
+from the template - so an extension also has to add it to `#chat .mes
+.extraMesButtons` for the messages already on screen.
+
+Use `mes_button` for the styling the row expects, and read the message index
+from the enclosing `.mes` element's `mesid` attribute (`Number($(this)
+.closest('.mes').attr('mesid'))`), which is what SillyTavern's own handlers do.
+Bind the click delegated from a stable ancestor rather than to the buttons
+directly: `#chat` is replaced wholesale on every re-render.
+
 ## The `hidden` attribute pitfall (the expensive lesson)
 
 The HTML `hidden` attribute works via the browser's default (UA) stylesheet

@@ -235,6 +235,51 @@ export async function rerunAreaExtractionNow(areaKey) {
     });
 }
 
+// The same pass the message got automatically, gate included: without it the
+// per-area diffs answer for areas nothing happened in, and the model finds a
+// change to report rather than none. What re-reading changes is only which
+// message is read and that the "already extracted" marker does not stop it -
+// and the result lands on the state as it stands now, which is the point: the
+// slot has been wrong ever since.
+export async function rereadMessageForState(messageId) {
+    const settings = ensureSettings();
+    if (!settings.connectionProfile) {
+        toastr.warning(NO_PROFILE_WARNING, "Psychograph");
+        return;
+    }
+
+    const message = getContext().chat[messageId];
+    if (!isStoryMessage(message)) {
+        toastr.warning("That is a system or hidden message, nothing to analyze.", "Psychograph");
+        return;
+    }
+
+    const areaKeys = Object.keys(AREA_SLOT_CONFIGS).filter((key) => settings.state.areas[key].enabled);
+    if (areaKeys.length === 0) {
+        toastr.warning("Every area is switched off, nothing to analyze.", "Psychograph");
+        return;
+    }
+
+    const speaker = readMessageSpeaker(message);
+    toastr.info(`Reading message #${messageId} again…`, "Psychograph");
+    captureUndoSnapshot(`re-reading message #${messageId}`);
+
+    const asked = askStateChanges(settings.connectionProfile, areaKeys, message.mes, speaker);
+    await runInLane(STATE_LANE, async () => {
+        const changes = await asked;
+        await Promise.all(changes.map(({ areaKey, changedSlots }) =>
+            applyAreaSlots(areaKey, changedSlots, message.mes, speaker)));
+        noteLastExtraction(message, "state");
+        await refreshContextInject();
+        toastr[changes.length === 0 ? "info" : "success"](
+            changes.length === 0
+                ? `Nothing in message #${messageId} changed the sheet.`
+                : `Message #${messageId} read again.`,
+            "Psychograph",
+        );
+    });
+}
+
 function readAreaSeedText(config) {
     const fields = getContext().getCharacterCardFields();
 
