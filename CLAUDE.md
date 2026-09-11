@@ -88,9 +88,8 @@ never a walkthrough of the code itself.
 
 ## Extraction prompt wording
 
-The wording of LLM extraction prompts (e.g. `buildDefaultClothingDiffPrompt`,
-`buildClothingSlotUpdatePrompt` in `index.js`, and any future prompt built
-the same way) is tuned empirically against the user's own backend/model, not
+The wording of LLM extraction prompts (everything under `src/prompts/`, and
+any future prompt built the same way) is tuned empirically against the user's own backend/model, not
 derived from first principles. Small local models are highly sensitive to
 phrasing in ways that aren't obvious from reading the prompt — an "improvement"
 that looks reasonable (adding example items per category, a JSON few-shot
@@ -156,7 +155,8 @@ comments; only the chat itself switches language.
 - A `manifest.json` at the extension root declares metadata and the entry
   script.
 - `index.js` is the entry point; it registers UI via jQuery and hooks into
-  SillyTavern's event system (e.g. reacting to new messages).
+  SillyTavern's event system (e.g. reacting to new messages). Here it is a
+  bootstrap only — the code lives under `src/` (see *Source layout*).
 - Settings UI is a small HTML partial injected into SillyTavern's
   extensions settings panel, backed by a key in `extension_settings`.
 - For local development, an extension is loaded from
@@ -169,6 +169,39 @@ connection-profile access, schema-enforcement caveats, chat events), see
 findings from reading SillyTavern's own source, not orientation guesses.
 Update that file, don't re-derive from scratch, when something there turns
 out to be version-specific or wrong.
+
+## Source layout
+
+`index.js` is the SillyTavern entry point and does nothing but wire the pieces
+together on jQuery ready. Everything else lives under `src/`:
+
+| Path | Holds |
+|---|---|
+| `src/sillytavern.js` | Every import into SillyTavern's own source, and nowhere else. The depths differ per file and an extra `../` 404s silently at load time, so they are kept in one place. |
+| `src/constants.js` | Extension name/path and the `message`/`seed` extraction modes. |
+| `src/settings.js` | Global `extension_settings` branch: defaults and `ensureSettings()`. |
+| `src/chat-state.js` | The per-chat `chat_metadata` branch: `ensureChatState()`, the layout migrations, and who the sheet is about. |
+| `src/messages.js` | What counts as a story/timeline message, and the per-message "already extracted" markers. |
+| `src/undo.js` | The one-step snapshot behind "Restore previous". |
+| `src/llm/` | `request.js` — profile resolution, the schema-enforced request, the backfill pool. `similarity.js` — rerank/embedding calls that go straight to the user's own server. |
+| `src/prompts/` | Prompt text and response schemas only, one file per layer. Nothing here reads or writes state. |
+| `src/layers/state/` | `areas.js` — the 14 slots across 3 areas and their per-area config. `extraction.js` — the gate -> diff -> per-slot-update pipeline. |
+| `src/layers/timeline/` | `store.js` — the timeline blob and its work queue. `extraction.js` — per-message entries and the full rebuild. |
+| `src/layers/knowledge/` | `layers.js` — the three layer configurations (facts, dispositions, triggers). `store.js` — entry lists, dedup and merge. `extraction.js` — the model calls, card seeding and the rebuild. |
+| `src/layers/cognee.js` | The Cognee client: chat-scoped datasets, ingestion, backfill, recall. |
+| `src/injects.js` | Every `setExtensionPrompt` the memory layers make, and the generation hook that refreshes them. |
+| `src/ui/` | `settings-panel.js`, `sheet.js`, `guided.js`, `toolbar.js`. |
+| `src/events.js` | The SillyTavern event bindings. |
+
+Two conventions worth keeping:
+
+- A layer never imports another layer's internals; it goes through that layer's
+  store or extraction entry point.
+- Data modules calling a `render*` function from `src/ui/` is how the sheet
+  stays live, and it does make those imports circular. That works because every
+  such reference is a function call at runtime — never a value read while a
+  module is still evaluating. Keep it that way: a `const` in one of those
+  modules must not be initialised from the other side of a cycle.
 
 ## Roadmap
 
