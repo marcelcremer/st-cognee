@@ -1,11 +1,13 @@
-import { eventSource, event_types } from "./sillytavern.js";
-import { flushCogneeRecallInject, flushKnowledgeInject, flushStateInject, flushTimelineInject, handleCogneeRecall, handleInjectsForGeneration } from "./injects.js";
+import { eventSource, event_types, getContext } from "./sillytavern.js";
+import { flushCogneeRecallInject, flushKnowledgeInject, flushMotivationInject, flushStateInject, flushTimelineInject, handleCogneeRecall, handleInjectsForGeneration } from "./injects.js";
 import { handleCogneeIngestion } from "./layers/cognee.js";
 import { extractKnowledgeForNewMessage } from "./layers/knowledge/extraction.js";
 import { KNOWLEDGE_LAYERS } from "./layers/knowledge/layers.js";
+import { readMotivationRoll } from "./layers/motivation/lottery.js";
 import { extractStateForNewMessage } from "./layers/state/extraction.js";
 import { extractTimelineForNewMessage } from "./layers/timeline/extraction.js";
 import { NO_PROFILE_WARNING, warnOnce } from "./llm/request.js";
+import { markMotivationRoll } from "./messages.js";
 import { ensureSettings } from "./settings.js";
 import { renderChatState, renderCogneeChatSection } from "./ui/settings-panel.js";
 import { captureUndoSnapshot } from "./undo.js";
@@ -37,6 +39,16 @@ function handleChatMessageEvent() {
     };
 }
 
+// The roll that was injected belongs to the message it produced, so it is
+// stamped on the received one only - a sent message was written by the user.
+function handleMotivationRecord(messageId) {
+    const settings = ensureSettings();
+    if (!settings.enabled || !settings.motivation.enabled) {
+        return;
+    }
+    markMotivationRoll(getContext().chat[messageId], readMotivationRoll());
+}
+
 export function bindChatEvents() {
     eventSource.on(event_types.MESSAGE_SENT, handleChatMessageEvent());
     eventSource.on(event_types.MESSAGE_RECEIVED, handleChatMessageEvent());
@@ -56,6 +68,9 @@ export function bindChatEvents() {
     eventSource.on(event_types.GENERATION_ENDED, flushStateInject);
     eventSource.on(event_types.GENERATION_ENDED, flushTimelineInject);
     eventSource.on(event_types.GENERATION_ENDED, flushKnowledgeInject);
+    eventSource.on(event_types.GENERATION_ENDED, flushMotivationInject);
+
+    eventSource.on(event_types.MESSAGE_RECEIVED, handleMotivationRecord);
 
     // Slot inputs show the current chat's state — without this they'd keep
     // displaying whatever chat was open when the panel was last rendered.

@@ -1,12 +1,15 @@
-import { dragElement, getContext, loadMovingUIState } from "../sillytavern.js";
+import { dragElement, getContext, loadMovingUIState, saveSettingsDebounced } from "../sillytavern.js";
 import { ensureChatState, readTargetName } from "../chat-state.js";
 import { buildAllKnowledge, rerunKnowledgeExtractionNow } from "../layers/knowledge/extraction.js";
 import { KNOWLEDGE_KEYS, KNOWLEDGE_LAYERS } from "../layers/knowledge/layers.js";
 import { readKnowledgeEntries, writeKnowledgeEntries } from "../layers/knowledge/store.js";
+import { MOTIVATION_CONTINUATIONS, MOTIVATION_DRIVERS } from "../layers/motivation/drivers.js";
+import { readMotivationRoll, rollMotivation, writeMotivationLock, writeMotivationSelection } from "../layers/motivation/lottery.js";
 import { AREA_SLOT_CONFIGS, STATE_AREAS } from "../layers/state/areas.js";
 import { rerunAreaExtractionNow } from "../layers/state/extraction.js";
 import { rerunTimelineExtractionNow } from "../layers/timeline/extraction.js";
 import { readTimeline } from "../layers/timeline/store.js";
+import { ensureSettings } from "../settings.js";
 import { captureUndoSnapshot, restorePreviousState } from "../undo.js";
 import { renderChatState } from "./settings-panel.js";
 
@@ -14,7 +17,9 @@ const SHEET_ID = "psychograph_sheet";
 
 const SHEET_TIMELINE_TAB = "timeline";
 
-let activeSheetTab = STATE_AREAS[0].key;
+const SHEET_MOTIVATION_TAB = "motivation";
+
+let activeSheetTab = SHEET_MOTIVATION_TAB;
 
 // "bodyChanges" -> "Body Changes". Every slot name in AREA_SLOT_CONFIGS reads
 // as its own label this way, so the sheet needs no second list to maintain.
@@ -24,6 +29,7 @@ function humanizeSlot(slot) {
 
 function buildSheetTabsHtml() {
     const tabs = [
+        { key: SHEET_MOTIVATION_TAB, label: "Motivation" },
         ...STATE_AREAS.map(({ key }) => ({ key, label: AREA_SLOT_CONFIGS[key].label })),
         { key: SHEET_TIMELINE_TAB, label: "Timeline" },
         { key: SHEET_KNOWLEDGE_TAB, label: "Knowledge" },
@@ -50,6 +56,40 @@ function buildSheetAreaPaneHtml(areaKey) {
                 <span class="psychograph-sheet-count">${config.slots.length} fields</span>
             </div>
             <div class="psychograph-sheet-fields">${fields}</div>
+        </div>
+    `;
+}
+
+// The empty option is what an unrolled chat shows. Without it the select would
+// display the first driver while the chat has none, and picking that driver by
+// hand would fire no change event - so a locked pair could never be set to it.
+function buildMotivationOptionsHtml(options) {
+    return [
+        `<option value="">not rolled yet</option>`,
+        ...options.map(({ key, label }) => `<option value="${key}">${label}</option>`),
+    ].join("");
+}
+
+function buildSheetMotivationPaneHtml() {
+    return `
+        <div class="psychograph-sheet-pane" data-tab="${SHEET_MOTIVATION_TAB}">
+            <div class="psychograph-sheet-pane-header">
+                <label class="checkbox_label" for="psychograph_motivation_enabled">
+                    <input id="psychograph_motivation_enabled" type="checkbox" />
+                    Enabled
+                </label>
+                <label class="checkbox_label" for="psychograph_motivation_locked" title="Keep this pair for the next messages and swipes instead of drawing a new one">
+                    <input id="psychograph_motivation_locked" type="checkbox" />
+                    Lock
+                </label>
+            </div>
+            <small class="psychograph-sheet-hint">Every generation gets one driver and one continuation rule, injected after the last message.</small>
+            <div class="psychograph-sheet-fields">
+                <label for="psychograph_motivation_driver">Driver</label>
+                <select id="psychograph_motivation_driver" class="text_pole">${buildMotivationOptionsHtml(MOTIVATION_DRIVERS)}</select>
+                <label for="psychograph_motivation_continuation">Continuation</label>
+                <select id="psychograph_motivation_continuation" class="text_pole">${buildMotivationOptionsHtml(MOTIVATION_CONTINUATIONS)}</select>
+            </div>
         </div>
     `;
 }
@@ -148,6 +188,7 @@ function buildSheetBodyHtml() {
             </select>
         </div>
         <div class="psychograph-sheet-content">
+            ${buildSheetMotivationPaneHtml()}
             ${STATE_AREAS.map(({ key }) => buildSheetAreaPaneHtml(key)).join("")}
             ${buildSheetTimelinePaneHtml()}
             ${buildSheetKnowledgePaneHtml()}
@@ -213,6 +254,9 @@ export function toggleSheetPanel() {
 
 function selectSheetTab(tab) {
     activeSheetTab = tab;
+    const isMotivation = tab === SHEET_MOTIVATION_TAB;
+    $(`#${SHEET_ID} .psychograph-sheet-applies`).toggle(!isMotivation);
+    $("#psychograph_sheet_extract").text(isMotivation ? "Roll again" : "Extract now");
     $(`#${SHEET_ID} .psychograph-sheet-tab`).each(function () {
         $(this).toggleClass("active", String($(this).data("tab")) === tab);
     });
@@ -221,8 +265,17 @@ function selectSheetTab(tab) {
     });
 }
 
+export function renderMotivationRoll() {
+    const motivation = readMotivationRoll();
+    $("#psychograph_motivation_enabled").prop("checked", ensureSettings().motivation.enabled);
+    $("#psychograph_motivation_locked").prop("checked", motivation.locked);
+    $("#psychograph_motivation_driver").val(motivation.driver);
+    $("#psychograph_motivation_continuation").val(motivation.continuation);
+}
+
 export function renderSheetHeader() {
     $("#psychograph_sheet_character").text(readTargetName());
+    renderMotivationRoll();
     const entries = readTimeline().split("\n").filter((line) => line.trim()).length;
     $("#psychograph_sheet_timeline_count").text(`${entries} ${entries === 1 ? "entry" : "entries"}`);
     renderKnowledgeGroups();
@@ -348,6 +401,10 @@ async function runForEveryKnowledgeLayer(action) {
 }
 
 async function extractActiveSheetTabNow() {
+    if (activeSheetTab === SHEET_MOTIVATION_TAB) {
+        rollMotivation();
+        return;
+    }
     if (activeSheetTab === SHEET_TIMELINE_TAB) {
         await rerunTimelineExtractionNow();
         return;
@@ -373,6 +430,21 @@ export function bindSheetEvents() {
     panel.on("click", ".psychograph-sheet-options-toggle", function () {
         $(`.psychograph-sheet-options[data-tab="${$(this).data("tab")}"]`).toggleClass("shown");
     });
+
+    $("#psychograph_motivation_enabled").on("change", function () {
+        ensureSettings().motivation.enabled = $(this).prop("checked");
+        saveSettingsDebounced();
+    });
+
+    $("#psychograph_motivation_locked").on("change", function () {
+        writeMotivationLock($(this).prop("checked"));
+    });
+
+    for (const field of ["driver", "continuation"]) {
+        $(`#psychograph_motivation_${field}`).on("change", function () {
+            writeMotivationSelection(field, String($(this).val()));
+        });
+    }
 
     $("#psychograph_sheet_extract").on("click", extractActiveSheetTabNow);
     $("#psychograph_sheet_restore").on("click", restorePreviousState);

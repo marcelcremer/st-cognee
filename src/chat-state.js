@@ -47,6 +47,10 @@ export function ensureChatState() {
     if (chatState.timeline === undefined) {
         chatState.timeline = "";
     }
+    chatState.motivation = chatState.motivation || {};
+    chatState.motivation.driver = chatState.motivation.driver || "";
+    chatState.motivation.continuation = chatState.motivation.continuation || "";
+    chatState.motivation.locked = Boolean(chatState.motivation.locked);
     chatState.knowledge = chatState.knowledge || {};
     for (const key of KNOWLEDGE_KEYS) {
         // Chats written before the other two layers existed carry the trigger

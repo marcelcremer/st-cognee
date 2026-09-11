@@ -32,6 +32,9 @@ const defaultSettings = {
         includeHidden: true,
         injectEnabled: true,
     }])),
+    motivation: {
+        enabled: true,
+    },
     timeline: {
         autoExtract: true,
         includeHidden: true,
@@ -63,6 +66,7 @@ export function ensureSettings() {
     settings.cognee = fillDefaults(settings.cognee, defaultSettings.cognee);
     settings.similarity = fillDefaults(settings.similarity, defaultSettings.similarity);
     settings.timeline = fillDefaults(settings.timeline, defaultSettings.timeline);
+    settings.motivation = fillDefaults(settings.motivation, defaultSettings.motivation);
     settings.knowledge = settings.knowledge || {};
     for (const key of KNOWLEDGE_KEYS) {
         // The trigger layer predates the other two and had settings of its own.

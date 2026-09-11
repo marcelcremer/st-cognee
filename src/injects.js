@@ -3,6 +3,8 @@ import { ensureChatState, readTargetName } from "./chat-state.js";
 import { getCogneeChatId, recallFromCognee } from "./layers/cognee.js";
 import { KNOWLEDGE_KEYS, KNOWLEDGE_LAYERS } from "./layers/knowledge/layers.js";
 import { readKnowledgeEntries } from "./layers/knowledge/store.js";
+import { buildMotivationInject } from "./layers/motivation/drivers.js";
+import { nextMotivationRoll } from "./layers/motivation/lottery.js";
 import { AREA_SLOT_CONFIGS, STATE_AREAS } from "./layers/state/areas.js";
 import { readTimeline } from "./layers/timeline/store.js";
 import { ensureSettings } from "./settings.js";
@@ -68,7 +70,7 @@ export async function handleInjectsForGeneration(type, _options, dryRun) {
     if (dryRun || type === "quiet") {
         return;
     }
-    await Promise.all([refreshStateInject(), refreshTimelineInject(), refreshKnowledgeInject()]);
+    await Promise.all([refreshStateInject(), refreshTimelineInject(), refreshKnowledgeInject(), refreshMotivationInject()]);
 }
 
 export async function flushStateInject() {
@@ -164,6 +166,34 @@ async function refreshKnowledgeInject() {
 
 export async function flushKnowledgeInject() {
     await getContext().executeSlashCommandsWithOptions(`/flushinject ${KNOWLEDGE_INJECT_ID} |`);
+}
+
+const MOTIVATION_INJECT_ID = "psychograph_motivation";
+
+// The one inject that does not go to position=after: it carries a fresh value
+// every turn, and the context template sits in front of the whole chat, so an
+// anchor there would invalidate the prompt cache down to the story string.
+// depth=0 puts it behind the last message instead, where only it is new.
+async function refreshMotivationInject() {
+    const settings = ensureSettings();
+    if (!settings.enabled || !settings.motivation.enabled) {
+        await flushMotivationInject();
+        return;
+    }
+
+    const snapshot = buildMotivationInject(nextMotivationRoll());
+    if (!snapshot) {
+        await flushMotivationInject();
+        return;
+    }
+
+    await getContext().executeSlashCommandsWithOptions(
+        `/inject id=${MOTIVATION_INJECT_ID} position=chat depth=0 role=system ephemeral=true scan=false ${snapshot} |`,
+    );
+}
+
+export async function flushMotivationInject() {
+    await getContext().executeSlashCommandsWithOptions(`/flushinject ${MOTIVATION_INJECT_ID} |`);
 }
 
 const COGNEE_RECALL_INJECT_ID = "psychograph_cognee_recall";
