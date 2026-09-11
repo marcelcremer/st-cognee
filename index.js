@@ -3095,9 +3095,12 @@ function escapeHtmlAttribute(value) {
     return String(value ?? "").replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
 
-// Collapsed state is per character and layer, and deliberately not persisted:
-// it is how the panel looks right now, not something about the chat.
-const collapsedKnowledgeSections = new Set();
+// Section state is per character and layer, and deliberately not persisted: it
+// is how the panel looks right now, not something about the chat. Only sections
+// the user has actually toggled are in here — everything else follows the
+// default of "open when it has entries", which is why an empty section can
+// still be opened to add the first one.
+const knowledgeSectionState = new Map();
 
 function knowledgeSectionKey(group, layerKey) {
     return `${group}::${layerKey}`;
@@ -3133,9 +3136,21 @@ function buildKnowledgeEntryHtml(layerKey, { entry, index }) {
                 placeholder="${humanizeSlot(field).toLowerCase()}" value="${escapeHtmlAttribute(entry[field])}" />
         `).join("");
 
+    // Redundant with the heading above it, and there anyway: it is the only way
+    // to move a single entry to someone else without touching its neighbours.
+    const owner = `
+        <label class="psychograph-knowledge-owner">
+            <i class="fa-solid fa-user"></i>
+            <input type="text" class="psychograph-knowledge-input psychograph-knowledge-owner-input"
+                data-field="${layer.groupBy}" placeholder="${UNNAMED_KNOWLEDGE_GROUP}"
+                title="Move just this entry to someone else"
+                value="${escapeHtmlAttribute(entry[layer.groupBy])}" />
+        </label>
+    `;
+
     return `
         <div class="psychograph-knowledge-entry" data-layer="${layerKey}" data-index="${index}">
-            <div class="psychograph-knowledge-entry-fields">${fields}</div>
+            <div class="psychograph-knowledge-entry-fields">${fields}${owner}</div>
             <div class="psychograph-knowledge-delete fa-solid fa-xmark interactable" title="Delete entry" tabindex="0"></div>
         </div>
     `;
@@ -3143,7 +3158,8 @@ function buildKnowledgeEntryHtml(layerKey, { entry, index }) {
 
 function buildKnowledgeSectionHtml(group, layerKey, rows) {
     const layer = KNOWLEDGE_LAYERS[layerKey];
-    const collapsed = collapsedKnowledgeSections.has(knowledgeSectionKey(group, layerKey)) || rows.length === 0;
+    const key = knowledgeSectionKey(group, layerKey);
+    const collapsed = !(knowledgeSectionState.has(key) ? knowledgeSectionState.get(key) : rows.length > 0);
 
     return `
         <div class="psychograph-knowledge-section${collapsed ? "" : " open"}" data-group="${escapeHtmlAttribute(group)}" data-layer="${layerKey}">
@@ -3269,18 +3285,14 @@ function bindSheetEvents() {
     panel.on("click", ".psychograph-knowledge-section-header", function () {
         const section = $(this).closest(".psychograph-knowledge-section");
         const key = knowledgeSectionKey(String(section.data("group")), String(section.data("layer")));
-        if (collapsedKnowledgeSections.has(key)) {
-            collapsedKnowledgeSections.delete(key);
-        } else {
-            collapsedKnowledgeSections.add(key);
-        }
+        knowledgeSectionState.set(key, !section.hasClass("open"));
         renderKnowledgeGroups();
     });
 
     panel.on("click", ".psychograph-knowledge-add[data-layer]", function () {
         const layer = KNOWLEDGE_LAYERS[String($(this).data("layer"))];
         const group = String($(this).data("group"));
-        collapsedKnowledgeSections.delete(knowledgeSectionKey(group, layer.id));
+        knowledgeSectionState.set(knowledgeSectionKey(group, layer.id), true);
         writeKnowledgeEntries(layer, [
             ...readKnowledgeEntries(layer),
             Object.fromEntries(layer.fields.map((field) => [field, field === layer.groupBy ? group : ""])),
@@ -3301,6 +3313,10 @@ function bindSheetEvents() {
             ensureChatState().knowledge[key].entries = entries;
         }
         getContext().saveMetadataDebounced();
+        renderKnowledgeGroups();
+    });
+
+    panel.on("change", ".psychograph-knowledge-owner-input", function () {
         renderKnowledgeGroups();
     });
 

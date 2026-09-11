@@ -406,3 +406,24 @@
 .psychograph-knowledge-settings {
     padding-bottom: 6px;
 }
+
+/* The per-entry owner field duplicates the heading on purpose — it is how a
+   single entry moves to someone else — so it is styled to stay quiet. */
+.psychograph-knowledge-owner {
+    display: flex;
+    align-items: center;
+    gap: 0.4em;
+    padding-left: 12px;
+    font-size: 0.75em;
+    opacity: 0.45;
+}
+
+.psychograph-knowledge-owner:hover,
+.psychograph-knowledge-owner:focus-within {
+    opacity: 1;
+}
+
+.psychograph-knowledge-owner-input {
+    font-size: 1em;
+    padding: 1px 3px;
+}
