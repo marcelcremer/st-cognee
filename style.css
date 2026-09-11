@@ -243,6 +243,22 @@
     resize: vertical;
 }
 
+.psychograph-activity {
+    display: none;
+    align-self: center;
+    opacity: 0.7;
+    font-size: 0.9em;
+    animation: psychograph-spin 1.4s linear infinite;
+}
+
+.psychograph-activity.shown {
+    display: block;
+}
+
+@keyframes psychograph-spin {
+    to { transform: rotate(360deg); }
+}
+
 .psychograph-sheet-section {
     display: flex;
     flex-direction: column;

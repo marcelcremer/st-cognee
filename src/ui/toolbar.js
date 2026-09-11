@@ -26,6 +26,7 @@ export function buildToolbarButton() {
 
     $(buttonContainer).append(`
         <div id="psychograph_menu_button" class="psychograph-toolbar-button fa-solid fa-brain interactable" title="Character sheet" tabindex="0"></div>
+        <div id="psychograph_activity" class="psychograph-activity fa-solid fa-circle-notch" title="Psychograph is reading the last messages"></div>
         <div class="psychograph-guided-buttons">
             <div id="psychograph_guided_swipe_button" class="psychograph-toolbar-button fa-solid fa-forward interactable" title="Guided Swipe" tabindex="0"></div>
             <div id="psychograph_guided_message_button" class="psychograph-toolbar-button fa-solid fa-comment-dots interactable" title="Guided Message" tabindex="0"></div>
@@ -37,4 +38,15 @@ export function buildToolbarButton() {
     $("#psychograph_guided_swipe_button").on("click", guidedSwipe);
     $("#psychograph_guided_continue_button").on("click", guidedContinue);
     $("#psychograph_menu_button").on("click", toggleSheetPanel);
+}
+
+// Never the hidden attribute: this element sits in SillyTavern's own button row
+// and any author-level display rule would silently win over it. See
+// docs/sillytavern-ui-notes.md.
+export function renderExtractionActivity(pending) {
+    $("#psychograph_activity")
+        .toggleClass("shown", pending > 0)
+        .attr("title", pending === 1
+            ? "Psychograph is reading 1 message"
+            : `Psychograph is reading ${pending} messages`);
 }

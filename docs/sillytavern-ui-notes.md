@@ -189,6 +189,38 @@ charDepthPrompt, creatorNotes}` — already macro-substituted and trimmed.
 documented way to get "what does the card/persona actually say," instead of
 reaching into `characters[chid]` by hand.
 
+## Event listeners are awaited, and that puts them on the critical path
+
+`EventEmitter.prototype.emit` (`public/lib/eventemitter.js`) awaits every
+listener, one after another, each in its own try/catch:
+
+```js
+for (i = 0; i < length; i++) {
+    try { await listeners[i].apply(this, args); }
+    catch (err) { console.error(err); }
+}
+```
+
+So an `async` listener holds up whatever emitted the event. Two places where
+that matters:
+
+- `sendMessageAsUser()` does `await eventSource.emit(MESSAGE_SENT, chat_id)`
+  and is itself awaited by `Generate()` **before the request goes out**. Work
+  done in a `MESSAGE_SENT` listener therefore delays the reply's first token.
+- `MESSAGE_RECEIVED` is emitted *before* `addOneMessage()`, so without
+  streaming a listener there delays the reply being rendered at all.
+
+An extension that needs to do slow work on a message should mark and queue it
+synchronously and return, rather than awaiting the work in the listener.
+
+The per-listener try/catch is also why a listener that throws is invisible in
+the UI: every other listener still runs, and the only trace is a console error.
+
+`GENERATION_ENDED` is not a reliable counterpart to `GENERATION_STARTED`: it is
+emitted from `hideStopButton()` behind a NOOP guard (`if display !== 'none'`)
+and without `await`, so a generation that never showed a stop button never
+fires it. Anything gated on it needs a second release path.
+
 ## Slash commands / swipe from JS
 
 `context.executeSlashCommandsWithOptions(command)` runs raw stscript
