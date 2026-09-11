@@ -2,6 +2,8 @@ import { extension_settings, getContext } from "../../../extensions.js";
 import { saveSettingsDebounced } from "../../../../script.js";
 import { eventSource, event_types } from "../../../events.js";
 import { ConnectionManagerRequestService } from "../../shared.js";
+import { dragElement } from "../../../RossAscends-mods.js";
+import { loadMovingUIState } from "../../../power-user.js";
 
 const extensionName = "st-psychograph";
 const extensionFolderPath = `scripts/extensions/third-party/${extensionName}`;
@@ -24,6 +26,8 @@ const SEED_MODE = "seed";
 const AREA_DIFF_MAX_TOKENS = 250;
 const AREA_SLOT_UPDATE_MAX_TOKENS = 200;
 const AREA_GATE_MAX_TOKENS = 200;
+const TIMELINE_ENTRY_MAX_TOKENS = 300;
+const TIMELINE_KEEP_MAX_TOKENS = 200;
 
 // Values a model reaches for when a slot holds nothing. Outside Clothes these
 // are an absence and must not reach the prompt; inside Clothes "none" is itself
@@ -44,6 +48,7 @@ const AREA_SLOT_CONFIGS = {
         label: "Clothes",
         icon: "fa-shirt",
         slots: CLOTHING_SLOTS,
+        slotPlaceholders: Object.fromEntries(CLOTHING_SLOTS.map((slot) => [slot, "none"])),
         seedField: "target",
         groupDescription: "Clothes slots describe, where something is worn and not necessarily a category.",
         diffRules: [
@@ -111,6 +116,11 @@ const AREA_SLOT_CONFIGS = {
         label: "Body",
         icon: "fa-heart-pulse",
         slots: PHYSICAL_STATE_SLOTS,
+        slotPlaceholders: {
+            condition: "injury, illness, exhaustion, hunger, intoxication",
+            constraint: "what limits their freedom to act",
+            bodyChanges: "lasting differences from the profile description",
+        },
         seedField: "target",
         emptyValue: "",
         groupDescription: "Body slots track the character's body and what currently limits their ability to act.",
@@ -173,6 +183,11 @@ const AREA_SLOT_CONFIGS = {
         label: "Scene",
         icon: "fa-location-dot",
         slots: SITUATIONAL_SLOTS,
+        slotPlaceholders: {
+            location: "where they are, and how private or exposed",
+            presentPeople: "who is in the scene",
+            timeOfDay: "not established",
+        },
         seedField: "scenario",
         emptyValue: "",
         groupDescription: "Scene slots describe the scene the characters are currently in - where they are, who is with them, and when it is - not their actions or dialogue.",
@@ -458,9 +473,499 @@ function buildAreaGateSchema(eligibleAreaKeys) {
     };
 }
 
+// Shown in place of the entry list while the timeline is still empty: an empty
+// section would be dropped from the document entirely, leaving the model
+// without the heading the rules below refer back to.
+const TIMELINE_EMPTY_PLACEHOLDER = "Nothing yet.";
+
+// Under evaluation against the user's own model — see CLAUDE.md before
+// touching any of this wording.
+function buildTimelinePrompt(currentTimeline, speaker, message) {
+    const context = getContext();
+
+    return buildPromptDocument([
+        {
+            heading: "# Task Description",
+            content: `Your job is to check a recent excerpt of the roleplay between ${context.name1} and ${context.name2} for a new fact worth adding to the timeline, and to write it if one exists. You are NOT continuing the roleplay, judging the content, or writing dialogue.`,
+        },
+        {
+            heading: "## The test",
+            content: `Ask yourself: if I skip this excerpt, what would I no longer know an hour from now that isn't already covered by an entry below — even in different words, or with a different specific trigger or example? Log only that — a new fact that now holds, a decision that was made, a state that changed.
+
+If the excerpt only contains talking, asking, feeling, reacting, or restating/reinforcing something that's already true — without anything actually becoming true or false as a result — there is nothing to log yet. Set "significant" to false.
+
+SARCASM: if something is exaggerated or not meant literally, don't record it as literal fact.`,
+        },
+        {
+            heading: "## Already on the timeline",
+            content: currentTimeline.trim() || TIMELINE_EMPTY_PLACEHOLDER,
+        },
+        {
+            heading: "## Writing the entry",
+            content: bulletList([
+                "Resolve pronouns and nicknames to actual character names.",
+                "One short sentence, neutral past tense, stating only what is now true — no framing of how important, surprising, or pivotal it is.",
+                "Match the style of the existing entries above.",
+                "Reasoning is just for debug — one concise sentence is enough.",
+            ]),
+        },
+        {
+            heading: "## Output format",
+            content: `Respond with ONLY a JSON object (no markdown code fence), using exactly this shape:\n{"reasoning": "...", "significant": true | false, "entry": "..." | null}`,
+        },
+    ], speaker, message);
+}
+
+function buildTimelineSchema() {
+    return {
+        type: "object",
+        properties: {
+            reasoning: {
+                type: "string",
+                description: "One concise sentence working through the test above, before answering.",
+            },
+            significant: {
+                type: "boolean",
+                description: "True if the excerpt establishes something the timeline does not already cover.",
+            },
+            entry: {
+                type: ["string", "null"],
+                description: "The new timeline entry as one short sentence, or null when there is nothing to log.",
+            },
+        },
+        required: ["reasoning", "significant", "entry"],
+        additionalProperties: false,
+    };
+}
+
+// Deliberately context-free: the entry is judged on its own substance, not
+// against the timeline it would join. Under evaluation against the user's own
+// model — see CLAUDE.md before touching any of this wording.
+function buildTimelineKeepPrompt(entry) {
+    return buildPromptDocument([
+        {
+            heading: "# Task Description",
+            content: "You will see a single candidate timeline entry, with no other context. Your job is to judge whether it's substantial enough to keep on a long-running story timeline, or whether it should be discarded as too minor.",
+        },
+        {
+            heading: "## The test",
+            content: "If you were a book summarizer who had to create a timeline of events - would you include this summary in your timeline or discard it?",
+        },
+        {
+            heading: "## Output format",
+            content: `Respond with ONLY a JSON object (no markdown code fence), using exactly this shape:\n{"reasoning": "...", "keep": true | false}`,
+        },
+    ], "", entry);
+}
+
+function buildTimelineKeepSchema() {
+    return {
+        type: "object",
+        properties: {
+            reasoning: {
+                type: "string",
+                description: "One concise sentence working through the test above, before answering.",
+            },
+            keep: {
+                type: "boolean",
+                description: "True if the entry is substantial enough for a long-running story timeline.",
+            },
+        },
+        required: ["reasoning", "keep"],
+        additionalProperties: false,
+    };
+}
+
+// Under evaluation against the user's own model — see CLAUDE.md before
+// touching any of this wording.
+function buildTriggerMapPrompt(currentMap, speaker, message) {
+    const context = getContext();
+
+    return buildPromptDocument([
+        {
+            heading: "# Task Description",
+            content: `Your job is to check a recent excerpt of the roleplay between ${context.name1} and ${context.name2} for standing trigger-response patterns worth adding to a character's trigger map, and to write them if any exist. You are NOT continuing the roleplay, judging the content, or writing dialogue.`,
+        },
+        {
+            heading: "## The test",
+            content: `Imagine you're writing a character bible for a show's writers' room — the reference sheet that lists "whenever X happens, this character reliably does Y," so future episodes stay consistent. Would this excerpt earn an entry on that sheet?
+
+That means the excerpt must state that the pair recurs — with a word like "always", "every time" or "whenever", or as a conditioning that was deliberately established. A reaction the excerpt only shows happening once is not a trigger pattern, however strong that reaction is. A single moment of sadness is not one either. "Whenever she smells smoke, she goes quiet and won't answer" is.
+
+The excerpt may contain zero, one, or several such patterns — check for all of them, across all characters present.
+
+If the excerpt only shows a character reacting to something, and does not say the same reaction happens whenever that condition occurs, there is nothing to log for that character.`,
+        },
+        {
+            heading: "## Already known for these characters (do not duplicate)",
+            content: `${currentMap}
+
+Skip any pattern that reinforces or adds detail to an existing entry above (same trigger, same character) — that pattern is already captured. Only include a pattern if the trigger, the response, or the character is genuinely new.`,
+        },
+        {
+            heading: "## Writing an entry",
+            content: bulletList([
+                "Resolve pronouns and nicknames to actual character names.",
+                `"trigger" is the condition, as concrete and specific as the excerpt actually supports (e.g. "sees the color red", not "gets upset").`,
+                `"response" is what reliably happens — involuntary reactions, behavior changes, emotional shifts. Neutral, present tense, no editorializing about how significant it is.`,
+                `If the excerpt states *why* the pattern exists (a trauma, an implanted memory, a past event), include it briefly in "response" only if stated — don't infer a cause that isn't in the text.`,
+                "Reasoning is just for debug — one concise sentence is enough, covering all findings.",
+            ]),
+        },
+        {
+            heading: "## Output format",
+            content: `Respond with ONLY a JSON object (no markdown code fence), using exactly this shape:
+{"reasoning": "...", "entries": [{"character": "...", "trigger": "...", "response": "..."}]}
+
+If nothing qualifies, use an empty array: {"reasoning": "...", "entries": []}`,
+        },
+    ], speaker, message);
+}
+
+// A profile is not a scene, so the seed gets its own wording rather than the
+// message prompt with other text poured into it — the same split the State
+// layer makes between its message and seed modes.
+function buildTriggerSeedPrompt(name, profile, currentMap) {
+    return buildPromptDocument([
+        {
+            heading: "# Task Description",
+            content: "Your job is to read a character profile and write down the standing trigger-response patterns it already establishes, so they are on the character's trigger map before the roleplay starts. You are NOT continuing the roleplay, judging the content, or writing dialogue.",
+        },
+        {
+            heading: "## The test",
+            content: `Imagine you're writing a character bible for a show's writers' room — the reference sheet that lists "whenever X happens, this character reliably does Y," so every episode stays consistent. Which of those entries does this profile already give you?
+
+That means the profile must state a condition-response pair that holds whenever the condition occurs, or a conditioning that was deliberately established. A trait is not a pattern: "she is nervous around dogs" stays out. "Whenever she hears the word 'sleep', her eyes go glassy and she follows instructions" is one. A single event from the character's past is not one either, unless the profile says it still happens.
+
+The profile may contain zero, one, or several such patterns — check for all of them.`,
+        },
+        {
+            heading: "## Already known for these characters (do not duplicate)",
+            content: `${currentMap}
+
+Skip any pattern that reinforces or adds detail to an existing entry above (same trigger, same character) — that pattern is already captured. Only include a pattern if the trigger, the response, or the character is genuinely new.`,
+        },
+        {
+            heading: "## Writing an entry",
+            content: bulletList([
+                "Resolve pronouns and nicknames to actual character names.",
+                `"trigger" is the condition, as concrete and specific as the profile actually supports (e.g. "hears the word 'sleep'", not "gets suggestible").`,
+                `"response" is what reliably happens — involuntary reactions, behavior changes, emotional shifts. Neutral, present tense, no editorializing about how significant it is.`,
+                `If the profile states *why* the pattern exists (a trauma, an implanted memory, a past event), include it briefly in "response" only if stated — don't infer a cause that isn't in the text.`,
+                "Reasoning is just for debug — one concise sentence is enough, covering all findings.",
+            ]),
+        },
+        {
+            heading: "## Output format",
+            content: `Respond with ONLY a JSON object (no markdown code fence), using exactly this shape:
+{"reasoning": "...", "entries": [{"character": "...", "trigger": "...", "response": "..."}]}
+
+If nothing qualifies, use an empty array: {"reasoning": "...", "entries": []}`,
+        },
+    ], `Profile of ${name}`, profile);
+}
+
+// --- Facts -------------------------------------------------------------
+// PROVISIONAL WORDING, not yet tested against the user's model.
+
+function buildFactPrompt(currentMap, speaker, message) {
+    const context = getContext();
+
+    return buildPromptDocument([
+        {
+            heading: "# Task Description",
+            content: `Your job is to check a recent excerpt of the roleplay between ${context.name1} and ${context.name2} for facts worth keeping, and to write them down if any exist. You are NOT continuing the roleplay, judging the content, or writing dialogue.`,
+        },
+        {
+            heading: "## The test",
+            content: `A fact is something that would still be true next week no matter what happens in the scene: who someone is related to, who they work for, where they come from, what they own, what they are called.
+
+What someone is doing, feeling, wearing or where they are standing right now is not a fact — that is the current situation and it is tracked elsewhere. Neither is something that merely happened; the event belongs elsewhere, only its lasting result is a fact. "Kim quit the clinic" is an event. "Kim no longer works at the clinic" is a fact.
+
+The excerpt may contain zero, one, or several facts — check for all of them, about anyone mentioned.`,
+        },
+        {
+            heading: "## Already known (do not duplicate)",
+            content: `${currentMap}
+
+Skip anything the list above already states, even in different words. Only write a fact down if it is genuinely new.`,
+        },
+        {
+            heading: "## Writing an entry",
+            content: bulletList([
+                "Resolve pronouns and nicknames to actual character names.",
+                `Write it as three parts: "subject", "relation", "object" — for example subject "Jake", relation "is cousin of", object "Kim Bauer".`,
+                "The subject is whoever the fact is about, in the direction the excerpt states it.",
+                `Keep the relation short and lowercase, in the present tense: "works at", "is cousin of", "lives in".`,
+                "Do not infer a fact that the excerpt does not state.",
+                "Reasoning is just for debug — one concise sentence is enough, covering all findings.",
+            ]),
+        },
+        {
+            heading: "## Output format",
+            content: `Respond with ONLY a JSON object (no markdown code fence), using exactly this shape:
+{"reasoning": "...", "entries": [{"subject": "...", "relation": "...", "object": "..."}]}
+
+If nothing qualifies, use an empty array: {"reasoning": "...", "entries": []}`,
+        },
+    ], speaker, message);
+}
+
+function buildFactSeedPrompt(name, profile, currentMap) {
+    return buildPromptDocument([
+        {
+            heading: "# Task Description",
+            content: "Your job is to read a character profile and write down the facts it establishes, so they are known before the roleplay starts. You are NOT continuing the roleplay, judging the content, or writing dialogue.",
+        },
+        {
+            heading: "## The test",
+            content: `A fact is something that would still be true next week no matter what happens in the story: who someone is related to, who they work for, where they come from, what they own, what they are called.
+
+What the character is *like* is not a fact — temperament, habits, looks and skills are the profile's own job and stay there. Neither is a single event from their past; only its lasting result is a fact.
+
+The profile may contain zero, one, or several facts — check for all of them, about anyone it mentions.`,
+        },
+        {
+            heading: "## Already known (do not duplicate)",
+            content: `${currentMap}
+
+Skip anything the list above already states, even in different words. Only write a fact down if it is genuinely new.`,
+        },
+        {
+            heading: "## Writing an entry",
+            content: bulletList([
+                "Resolve pronouns and nicknames to actual character names.",
+                `Write it as three parts: "subject", "relation", "object" — for example subject "Jake", relation "is cousin of", object "Kim Bauer".`,
+                "The subject is whoever the fact is about, in the direction the profile states it.",
+                `Keep the relation short and lowercase, in the present tense: "works at", "is cousin of", "lives in".`,
+                "Do not infer a fact that the profile does not state.",
+                "Reasoning is just for debug — one concise sentence is enough, covering all findings.",
+            ]),
+        },
+        {
+            heading: "## Output format",
+            content: `Respond with ONLY a JSON object (no markdown code fence), using exactly this shape:
+{"reasoning": "...", "entries": [{"subject": "...", "relation": "...", "object": "..."}]}
+
+If nothing qualifies, use an empty array: {"reasoning": "...", "entries": []}`,
+        },
+    ], `Profile of ${name}`, profile);
+}
+
+// --- Dispositions ------------------------------------------------------
+// PROVISIONAL WORDING, not yet tested against the user's model.
+
+function buildDispositionPrompt(currentMap, speaker, message) {
+    const context = getContext();
+
+    return buildPromptDocument([
+        {
+            heading: "# Task Description",
+            content: `Your job is to check a recent excerpt of the roleplay between ${context.name1} and ${context.name2} for lasting dispositions — what a character has come to feel, believe or expect — and to write them down if any exist. You are NOT continuing the roleplay, judging the content, or writing dialogue.`,
+        },
+        {
+            heading: "## The test",
+            content: `A disposition colours how a character behaves from now on, in situations the excerpt does not even mention: what they have stopped trusting, what they want, what they cannot stand, what a person or a subject has come to mean to them.
+
+It is not a compulsion. The character can act against a disposition if they choose to — that is what separates it from an automatic reaction they have no say in.
+
+A passing mood is not a disposition. Being annoyed right now is not one; having come to resent someone is.
+
+The excerpt may contain zero, one, or several — check for all of them, across all characters present.`,
+        },
+        {
+            heading: "## Already known for these characters (do not duplicate)",
+            content: `${currentMap}
+
+Skip anything the list above already states, even in different words. Only write a disposition down if it is genuinely new, or if the excerpt changes one that is listed.`,
+        },
+        {
+            heading: "## Writing an entry",
+            content: bulletList([
+                "Resolve pronouns and nicknames to actual character names.",
+                `"disposition" is one short sentence in the present tense, stating what now holds for that character — "has stopped trusting Jacob", "dislikes being called Kimmy".`,
+                "If the excerpt states what caused it, include it briefly only if stated — don't infer a cause that isn't in the text.",
+                "No editorializing about how significant or surprising it is.",
+                "Reasoning is just for debug — one concise sentence is enough, covering all findings.",
+            ]),
+        },
+        {
+            heading: "## Output format",
+            content: `Respond with ONLY a JSON object (no markdown code fence), using exactly this shape:
+{"reasoning": "...", "entries": [{"character": "...", "disposition": "..."}]}
+
+If nothing qualifies, use an empty array: {"reasoning": "...", "entries": []}`,
+        },
+    ], speaker, message);
+}
+
+function buildDispositionSeedPrompt(name, profile, currentMap) {
+    return buildPromptDocument([
+        {
+            heading: "# Task Description",
+            content: "Your job is to read a character profile and write down the lasting dispositions it establishes — what the character feels, believes or expects going into the story. You are NOT continuing the roleplay, judging the content, or writing dialogue.",
+        },
+        {
+            heading: "## The test",
+            content: `A disposition colours how the character behaves in situations the profile does not even mention: what they have stopped trusting, what they want, what they cannot stand, what a person or a subject has come to mean to them.
+
+It is not a compulsion. The character can act against a disposition if they choose to — that is what separates it from an automatic reaction they have no say in.
+
+A skill or a habit is not a disposition, and neither is what the character looks like.
+
+The profile may contain zero, one, or several — check for all of them.`,
+        },
+        {
+            heading: "## Already known for these characters (do not duplicate)",
+            content: `${currentMap}
+
+Skip anything the list above already states, even in different words. Only write a disposition down if it is genuinely new.`,
+        },
+        {
+            heading: "## Writing an entry",
+            content: bulletList([
+                "Resolve pronouns and nicknames to actual character names.",
+                `"disposition" is one short sentence in the present tense, stating what holds for that character — "distrusts anyone in uniform", "wants out of the city".`,
+                "If the profile states what caused it, include it briefly only if stated — don't infer a cause that isn't in the text.",
+                "No editorializing about how significant or surprising it is.",
+                "Reasoning is just for debug — one concise sentence is enough, covering all findings.",
+            ]),
+        },
+        {
+            heading: "## Output format",
+            content: `Respond with ONLY a JSON object (no markdown code fence), using exactly this shape:
+{"reasoning": "...", "entries": [{"character": "...", "disposition": "..."}]}
+
+If nothing qualifies, use an empty array: {"reasoning": "...", "entries": []}`,
+        },
+    ], `Profile of ${name}`, profile);
+}
+
+// PROVISIONAL WORDING, not yet tested against the user's model. Deliberately
+// tiny: two entries in, one line out, with no list and no bookkeeping — which
+// is the whole point of deciding at write time instead of compacting later.
+function buildKnowledgeMergePrompt(layer, existing, candidate) {
+    const render = (entry) => layer.fields.map((field) => `${field}: ${entry[field]}`).join("\n");
+
+    return buildPromptDocument([
+        {
+            heading: "# Task Description",
+            content: `You will see two entries from a ${layer.label.toLowerCase()} list that describe the same thing. Write the single entry that replaces them both.`,
+        },
+        {
+            heading: "## Rules",
+            content: bulletList([
+                "The new entry must state everything both entries state — join them, never pick one and drop the other.",
+                "Keep it as short as the originals, and in the same style.",
+                "Add nothing that is not in one of the two entries.",
+                "Reasoning is just for debug — one concise sentence is enough.",
+            ]),
+        },
+        {
+            heading: "## Output format",
+            content: `Respond with ONLY a JSON object (no markdown code fence), using exactly this shape:\n{"reasoning": "...", ${layer.fields.map((field) => `"${field}": "..."`).join(", ")}}`,
+        },
+    ], "", `Entry A\n${render(existing)}\n\nEntry B\n${render(candidate)}`);
+}
+
+// The three layers are one machine with three configurations: same table, same
+// backfill and same card seeding. What is deliberately NOT shared is
+// the model call — a 4B asked for three kinds at once gets less reliable, and
+// a truncated mixed array drops whichever kind came last without looking like
+// a failure.
+const KNOWLEDGE_LAYERS = {
+    facts: {
+        id: "facts",
+        label: "Facts",
+        fields: ["subject", "relation", "object"],
+        fieldDescriptions: {
+            subject: "Whoever or whatever the fact is about, by name.",
+            relation: "The relation, short, lowercase and in the present tense.",
+            object: "The other side of the relation.",
+        },
+        emptyPlaceholder: "Nothing known yet.",
+        groupBy: "subject",
+        renderEntry: (entry) => `${entry.relation} ${entry.object}`,
+        injectHeading: "## Facts",
+        injectIntro: "Those are additional facts that could be helpful for your next turn:",
+        injectEntry: (entry) => `- ${entry.subject} ${entry.relation} ${entry.object}`,
+        buildPrompt: buildFactPrompt,
+        buildSeedPrompt: buildFactSeedPrompt,
+    },
+    dispositions: {
+        id: "dispositions",
+        label: "Dispositions",
+        fields: ["character", "disposition"],
+        fieldDescriptions: {
+            character: "The character the disposition belongs to, by name.",
+            disposition: "One short sentence stating what now holds for them.",
+        },
+        emptyPlaceholder: "Nothing known yet.",
+        groupBy: "character",
+        renderEntry: (entry) => entry.disposition,
+        injectHeading: "## Dispositions",
+        injectIntro: "These are known dispositions for the different Characters:",
+        injectEntry: (entry) => `- ${entry.character} ${entry.disposition}`,
+        buildPrompt: buildDispositionPrompt,
+        buildSeedPrompt: buildDispositionSeedPrompt,
+    },
+    triggers: {
+        id: "triggers",
+        label: "Triggers",
+        fields: ["character", "trigger", "response"],
+        fieldDescriptions: {
+            character: "The character the pattern belongs to, by name.",
+            trigger: "The condition that sets the pattern off.",
+            response: "What reliably happens when it does.",
+        },
+        emptyPlaceholder: "Nothing known yet.",
+        groupBy: "character",
+        renderEntry: (entry) => `${entry.trigger} -> ${entry.response}`,
+        injectHeading: "## Triggers",
+        injectIntro: "The following list of triggers will override the Characters behaviour involuntarily. Play the role accordingly:",
+        injectEntry: (entry) => `- When ${entry.character} ${entry.trigger}: ${entry.response}`,
+        buildPrompt: buildTriggerMapPrompt,
+        buildSeedPrompt: buildTriggerSeedPrompt,
+    },
+};
+
+const KNOWLEDGE_KEYS = Object.keys(KNOWLEDGE_LAYERS);
+
+function buildKnowledgeSchema(layer, reasoningDescription) {
+    const properties = Object.fromEntries(
+        layer.fields.map((field) => [field, { type: "string", description: layer.fieldDescriptions[field] }]),
+    );
+    const required = [...layer.fields];
+
+    return {
+        type: "object",
+        properties: {
+            reasoning: { type: "string", description: reasoningDescription },
+            entries: {
+                type: "array",
+                description: "One object per entry. An empty array when there is nothing to record.",
+                items: { type: "object", properties, required, additionalProperties: false },
+            },
+        },
+        required: ["reasoning", "entries"],
+        additionalProperties: false,
+    };
+}
+
 const defaultSettings = {
     enabled: true,
     connectionProfile: "",
+    similarity: {
+        baseUrl: "",
+        apiKey: "",
+        rerankModel: "",
+        embeddingModel: "",
+        // Which of the two spellings this server answered on, so the working
+        // one is not re-discovered on every call.
+        rerankPath: "",
+        duplicateThreshold: 0.5,
+        mergeDuplicates: true,
+    },
     cognee: {
         baseUrl: "",
         apiKey: "",
@@ -469,6 +974,17 @@ const defaultSettings = {
     },
     state: {
         areas: Object.fromEntries(STATE_AREAS.map(({ key }) => [key, { enabled: true }])),
+    },
+    knowledge: Object.fromEntries(KNOWLEDGE_KEYS.map((key) => [key, {
+        autoExtract: true,
+        includeHidden: true,
+        injectEnabled: true,
+    }])),
+    timeline: {
+        autoExtract: true,
+        includeHidden: true,
+        injectEnabled: true,
+        injectLimit: 0,
     },
 };
 
@@ -495,6 +1011,24 @@ function isStoryMessage(message) {
     return Boolean(message) && !message.is_system && Boolean(String(message.mes ?? "").trim());
 }
 
+// SillyTavern's own chat-UI messages and /comment notes carry an extra.type,
+// which a story message never does; "narrator" is the exception, since /sys
+// writes story text.
+function isChatUiMessage(message) {
+    const type = message?.extra?.type;
+    return Boolean(type) && type !== "narrator";
+}
+
+// /hide only flips is_system on an existing message, so hidden story text is
+// otherwise a normal message — and it is still a record of something that
+// happened, which is the one thing a timeline is about.
+function isTimelineMessage(message, includeHidden) {
+    if (!message || !String(message.mes ?? "").trim() || isChatUiMessage(message)) {
+        return false;
+    }
+    return includeHidden || !message.is_system;
+}
+
 const STATE_EXTRACTED_KEY = "psychographStateExtracted";
 
 // The marker lives in message.extra, not in an in-memory set, so it survives a
@@ -510,20 +1044,95 @@ function markStateExtracted(message) {
     getContext().saveMetadataDebounced();
 }
 
+// One snapshot, taken before a round of extraction rather than per area: what
+// "Restore previous" undoes is everything the last run changed, which is how
+// it reads on the sheet. Restoring swaps rather than drops the snapshot, so a
+// restore can be taken back too.
+const UNDO_KEYS = ["areas", "timeline", "knowledge"];
+
+function captureUndoSnapshot(label) {
+    const chatState = ensureChatState();
+    chatState.previous = {
+        label,
+        data: Object.fromEntries(UNDO_KEYS.map((key) => [key, structuredClone(chatState[key])])),
+    };
+    renderSheetFooter();
+}
+
+function restorePreviousState() {
+    const chatState = ensureChatState();
+    const previous = chatState.previous;
+    if (!previous) {
+        toastr.info("Nothing to restore yet.", "Psychograph");
+        return;
+    }
+
+    const current = Object.fromEntries(UNDO_KEYS.map((key) => [key, structuredClone(chatState[key])]));
+    for (const key of UNDO_KEYS) {
+        chatState[key] = structuredClone(previous.data[key]);
+    }
+    chatState.previous = { label: `undo of "${previous.label}"`, data: current };
+
+    getContext().saveMetadataDebounced();
+    renderChatState();
+    toastr.success(`Restored what was there before ${previous.label}.`, "Psychograph");
+}
+
+function noteLastExtraction(message, label) {
+    const index = getContext().chat.indexOf(message);
+    ensureChatState().lastExtraction = { index, label };
+    getContext().saveMetadataDebounced();
+    renderSheetFooter();
+}
+
+const TIMELINE_EXTRACTED_KEY = "psychographTimelineExtracted";
+
+function isTimelineExtracted(message) {
+    return Boolean(message?.extra?.[TIMELINE_EXTRACTED_KEY]);
+}
+
+function markTimelineExtracted(message) {
+    message.extra = message.extra || {};
+    message.extra[TIMELINE_EXTRACTED_KEY] = true;
+    getContext().saveMetadataDebounced();
+}
+
+// Fills in what is missing without replacing the object. Rebuilding it on every
+// call handed out a fresh copy each time, so anything holding a reference to a
+// settings branch across an await was writing into a discarded object — which
+// is how the rerank path was stored and then reported as empty.
+function fillDefaults(target, defaults) {
+    const filled = target ?? {};
+    for (const [key, value] of Object.entries(defaults)) {
+        if (filled[key] === undefined) {
+            filled[key] = structuredClone(value);
+        }
+    }
+    return filled;
+}
+
 function ensureSettings() {
     if (!extension_settings[extensionName]) {
         extension_settings[extensionName] = structuredClone(defaultSettings);
     }
 
     const settings = extension_settings[extensionName];
-    settings.cognee = Object.assign(structuredClone(defaultSettings.cognee), settings.cognee);
+    settings.cognee = fillDefaults(settings.cognee, defaultSettings.cognee);
+    settings.similarity = fillDefaults(settings.similarity, defaultSettings.similarity);
+    settings.timeline = fillDefaults(settings.timeline, defaultSettings.timeline);
+    settings.knowledge = settings.knowledge || {};
+    for (const key of KNOWLEDGE_KEYS) {
+        // The trigger layer predates the other two and had settings of its own.
+        if (key === "triggers" && settings.triggers) {
+            settings.knowledge.triggers = fillDefaults(settings.knowledge.triggers, settings.triggers);
+        }
+        settings.knowledge[key] = fillDefaults(settings.knowledge[key], defaultSettings.knowledge[key]);
+    }
+    delete settings.triggers;
     settings.state = settings.state || {};
     settings.state.areas = settings.state.areas || {};
     for (const { key } of STATE_AREAS) {
-        settings.state.areas[key] = Object.assign(
-            structuredClone(defaultSettings.state.areas[key]),
-            settings.state.areas[key],
-        );
+        settings.state.areas[key] = fillDefaults(settings.state.areas[key], defaultSettings.state.areas[key]);
     }
     if (settings.enabled === undefined) {
         settings.enabled = defaultSettings.enabled;
@@ -562,6 +1171,22 @@ function ensureChatState() {
     if (chatState.seeded === undefined) {
         chatState.seeded = hasExtractedState(chatState);
     }
+    if (chatState.timeline === undefined) {
+        chatState.timeline = "";
+    }
+    chatState.knowledge = chatState.knowledge || {};
+    for (const key of KNOWLEDGE_KEYS) {
+        // Chats written before the other two layers existed carry the trigger
+        // list under its own key; this is the only copy of it.
+        const legacy = key === "triggers" ? chatState.triggerMap : null;
+        chatState.knowledge[key] = chatState.knowledge[key] || legacy || {};
+        chatState.knowledge[key].entries = chatState.knowledge[key].entries || [];
+        delete chatState.knowledge[key].sinceCompaction;
+        if (chatState.knowledge[key].seeded === undefined) {
+            chatState.knowledge[key].seeded = chatState.knowledge[key].entries.length > 0;
+        }
+    }
+    delete chatState.triggerMap;
 
     return chatState;
 }
@@ -661,6 +1286,21 @@ function renderSettings() {
     $("#psychograph_cognee_api_key").val(settings.cognee.apiKey);
     $("#psychograph_cognee_enabled").prop("checked", settings.cognee.enabled);
     $("#psychograph_cognee_recall_enabled").prop("checked", settings.cognee.recallEnabled);
+    $("#psychograph_similarity_base_url").val(settings.similarity.baseUrl);
+    $("#psychograph_similarity_api_key").val(settings.similarity.apiKey);
+    $("#psychograph_similarity_rerank_model").val(settings.similarity.rerankModel);
+    $("#psychograph_similarity_embedding_model").val(settings.similarity.embeddingModel);
+    $("#psychograph_similarity_threshold").val(settings.similarity.duplicateThreshold);
+    $("#psychograph_similarity_merge").prop("checked", settings.similarity.mergeDuplicates);
+    $("#psychograph_timeline_auto_extract").prop("checked", settings.timeline.autoExtract);
+    $("#psychograph_timeline_include_hidden").prop("checked", settings.timeline.includeHidden);
+    $("#psychograph_timeline_inject_enabled").prop("checked", settings.timeline.injectEnabled);
+    $("#psychograph_timeline_inject_limit").val(settings.timeline.injectLimit);
+    for (const key of KNOWLEDGE_KEYS) {
+        $(`#psychograph_${key}_auto_extract`).prop("checked", settings.knowledge[key].autoExtract);
+        $(`#psychograph_${key}_include_hidden`).prop("checked", settings.knowledge[key].includeHidden);
+        $(`#psychograph_${key}_inject_enabled`).prop("checked", settings.knowledge[key].injectEnabled);
+    }
     renderCogneeChatSection();
 
     for (const { key, id } of STATE_AREAS) {
@@ -677,6 +1317,8 @@ function renderSettings() {
 function renderChatState() {
     const chatState = ensureChatState();
     $("#psychograph_state_target").val(chatState.target);
+    $("#psychograph_timeline").val(chatState.timeline);
+    renderSheetHeader();
 
     for (const { key, id } of STATE_AREAS) {
         const slots = chatState.areas[key].slots;
@@ -697,6 +1339,30 @@ function bindSettingsEvents() {
         shownConfigWarnings.clear();
         saveSettingsDebounced();
     });
+
+    for (const [field, id] of [
+        ["baseUrl", "base_url"],
+        ["apiKey", "api_key"],
+        ["rerankModel", "rerank_model"],
+        ["embeddingModel", "embedding_model"],
+    ]) {
+        $(`#psychograph_similarity_${id}`).on("input", function () {
+            ensureSettings().similarity[field] = String($(this).val()).trim();
+            saveSettingsDebounced();
+        });
+    }
+
+    $("#psychograph_similarity_threshold").on("input", function () {
+        ensureSettings().similarity.duplicateThreshold = Math.min(1, Math.max(0, Number($(this).val()) || 0));
+        saveSettingsDebounced();
+    });
+
+    $("#psychograph_similarity_merge").on("change", function () {
+        ensureSettings().similarity.mergeDuplicates = $(this).prop("checked");
+        saveSettingsDebounced();
+    });
+
+    $("#psychograph_similarity_test").on("click", testSimilarityService);
 
     $("#psychograph_cognee_base_url").on("input", function () {
         ensureSettings().cognee.baseUrl = String($(this).val());
@@ -743,8 +1409,68 @@ function bindSettingsEvents() {
 
     $("#psychograph_cognee_backfill").on("click", backfillChatHistoryToCognee);
 
+    $("#psychograph_timeline").on("input", function () {
+        ensureChatState().timeline = String($(this).val());
+        renderSheetHeader();
+        getContext().saveMetadataDebounced();
+    });
+
+    $("#psychograph_timeline_auto_extract").on("change", function () {
+        ensureSettings().timeline.autoExtract = $(this).prop("checked");
+        saveSettingsDebounced();
+    });
+
+    $("#psychograph_timeline_include_hidden").on("change", function () {
+        ensureSettings().timeline.includeHidden = $(this).prop("checked");
+        saveSettingsDebounced();
+    });
+
+    $("#psychograph_timeline_inject_enabled").on("change", function () {
+        ensureSettings().timeline.injectEnabled = $(this).prop("checked");
+        saveSettingsDebounced();
+    });
+
+    $("#psychograph_timeline_inject_limit").on("input", function () {
+        ensureSettings().timeline.injectLimit = Math.max(0, Number($(this).val()) || 0);
+        saveSettingsDebounced();
+    });
+
+    for (const key of KNOWLEDGE_KEYS) {
+        $(`#psychograph_${key}_auto_extract`).on("change", function () {
+            ensureSettings().knowledge[key].autoExtract = $(this).prop("checked");
+            saveSettingsDebounced();
+        });
+
+        $(`#psychograph_${key}_include_hidden`).on("change", function () {
+            ensureSettings().knowledge[key].includeHidden = $(this).prop("checked");
+            saveSettingsDebounced();
+        });
+
+        $(`#psychograph_${key}_inject_enabled`).on("change", function () {
+            ensureSettings().knowledge[key].injectEnabled = $(this).prop("checked");
+            saveSettingsDebounced();
+        });
+
+    }
+
+    $("#psychograph_timeline_build").on("click", buildTimeline);
+
+    $("#psychograph_timeline_clear").on("click", async function () {
+        const context = getContext();
+        const confirmed = await context.callGenericPopup(
+            "Clear this chat's timeline? The entries only exist here.",
+            context.POPUP_TYPE.CONFIRM,
+        );
+        if (confirmed !== context.POPUP_RESULT.AFFIRMATIVE) {
+            return;
+        }
+        captureUndoSnapshot("clearing the timeline");
+        writeTimeline("");
+    });
+
     $("#psychograph_state_target").on("change", function () {
         ensureChatState().target = String($(this).val());
+        renderSheetHeader();
         getContext().saveMetadataDebounced();
     });
 
@@ -768,6 +1494,12 @@ function bindSettingsEvents() {
 }
 
 function parseJsonResponse(content) {
+    // The chat-completion path JSON.parses the response itself once a schema
+    // is in the request, so there is nothing left to parse here.
+    if (content && typeof content === "object") {
+        return content;
+    }
+
     const text = String(content).trim();
     try {
         return JSON.parse(text);
@@ -795,21 +1527,22 @@ function warnOnce(key, message) {
 
 const NO_PROFILE_WARNING = "No connection profile selected for Psychograph — state extraction stays off until you pick one.";
 
-// The only backends SillyTavern forwards json_schema to; everywhere else
-// enforcement silently no-ops, see docs/sillytavern-ui-notes.md.
+// Text completion is the picky mode: SillyTavern only forwards json_schema to
+// these two, while every chat-completion source gets a response_format built
+// for it. See docs/sillytavern-ui-notes.md.
 const SCHEMA_ENFORCING_APIS = new Set(["tabby", "llamacpp"]);
 
 function warnIfSchemaEnforcementUnsupported(profile) {
-    const suffix = "Extraction falls back to the prompt alone, which small models follow less reliably.";
-
     if (profile.mode !== "tc") {
-        warnOnce(`schema:${profile.id}`, `"${profile.name}" is a chat-completion profile and SillyTavern doesn't send a JSON schema for those. ${suffix}`);
         return;
     }
 
     const api = String(profile.api ?? "").toLowerCase();
     if (api && !SCHEMA_ENFORCING_APIS.has(api)) {
-        warnOnce(`schema:${profile.id}`, `SillyTavern doesn't forward the JSON schema to ${api}, only to TabbyAPI and llama.cpp. ${suffix}`);
+        warnOnce(
+            `schema:${profile.id}`,
+            `SillyTavern doesn't forward the JSON schema to ${api}, only to TabbyAPI and llama.cpp. Extraction falls back to the prompt alone, which small models follow less reliably.`,
+        );
     }
 }
 
@@ -836,9 +1569,12 @@ async function sendJsonSchemaRequest(profileId, schemaName, schema, prompt, maxT
         throw new Error(`Connection profile "${profileId}" is unavailable.`);
     }
 
+    // Both modes read the same field name but not the same shape: text
+    // completion takes the bare schema (as the Tabby settings field does),
+    // chat completion the wrapper its backend translates per provider.
     const overridePayload = profile.mode === "tc"
         ? { json_schema: schema }
-        : { response_format: { type: "json_schema", json_schema: { name: schemaName, strict: true, schema } } };
+        : { json_schema: { name: schemaName, strict: true, value: schema } };
 
     const response = await ConnectionManagerRequestService.sendRequest(
         profileId,
@@ -994,7 +1730,7 @@ function readTargetName() {
 
 // "|" ends a slash command, so a slot value carrying one would truncate the
 // inject and run whatever followed as a command of its own.
-function sanitizeSlotValue(value) {
+function sanitizeInjectValue(value) {
     return String(value).replace(/[|\r\n]+/g, " ").trim();
 }
 
@@ -1010,7 +1746,7 @@ function buildStateSnapshot() {
 
         const config = AREA_SLOT_CONFIGS[key];
         const lines = config.slots
-            .map((slot) => [slot, sanitizeSlotValue(chatState.areas[key].slots[slot] ?? "")])
+            .map((slot) => [slot, sanitizeInjectValue(chatState.areas[key].slots[slot] ?? "")])
             .filter(([, value]) => value)
             .map(([slot, value]) => `- ${slot}: ${value}`);
         if (lines.length === 0) {
@@ -1045,15 +1781,827 @@ async function refreshStateInject() {
     );
 }
 
-async function handleStateInjectForGeneration(type, _options, dryRun) {
+async function handleInjectsForGeneration(type, _options, dryRun) {
     if (dryRun || type === "quiet") {
         return;
     }
-    await refreshStateInject();
+    await Promise.all([refreshStateInject(), refreshTimelineInject(), refreshKnowledgeInject()]);
 }
 
 async function flushStateInject() {
     await getContext().executeSlashCommandsWithOptions(`/flushinject ${STATE_INJECT_ID} |`);
+}
+
+const TIMELINE_INJECT_ID = "psychograph_timeline";
+const TIMELINE_INJECT_HEADING = "## What has happened so far";
+
+// Injected whole by default. The zoom described in docs/memory-architecture.md
+// (recent entries individually, older ones merged) needs a pass of its own;
+// until then the limit is a blunt cutoff that keeps the most recent entries.
+function buildTimelineSnapshot() {
+    const settings = ensureSettings();
+    if (!settings.timeline.injectEnabled) {
+        return "";
+    }
+
+    const entries = readTimeline()
+        .split("\n")
+        .map((line) => sanitizeInjectValue(line).replace(/^[-*]\s*/, ""))
+        .filter(Boolean);
+    if (entries.length === 0) {
+        return "";
+    }
+
+    const limit = Number(settings.timeline.injectLimit) || 0;
+    const kept = limit > 0 ? entries.slice(-limit) : entries;
+    return kept.map((entry) => `- ${entry}`).join("\n");
+}
+
+async function refreshTimelineInject() {
+    if (!ensureSettings().enabled) {
+        return;
+    }
+
+    const snapshot = buildTimelineSnapshot();
+    if (!snapshot) {
+        await flushTimelineInject();
+        return;
+    }
+
+    await getContext().executeSlashCommandsWithOptions(
+        `/inject id=${TIMELINE_INJECT_ID} position=after ephemeral=true scan=true ${TIMELINE_INJECT_HEADING}\n${snapshot} |`,
+    );
+}
+
+async function flushTimelineInject() {
+    await getContext().executeSlashCommandsWithOptions(`/flushinject ${TIMELINE_INJECT_ID} |`);
+}
+
+const KNOWLEDGE_INJECT_ID = "psychograph_knowledge";
+
+// One inject rather than three: the sections are read together, and their
+// order (what is true, what colours behaviour, what overrides it) is part of
+// what tells the model how much weight each carries.
+function buildKnowledgeSnapshot() {
+    const settings = ensureSettings();
+
+    return KNOWLEDGE_KEYS.map((key) => {
+        const layer = KNOWLEDGE_LAYERS[key];
+        if (!settings.knowledge[key].injectEnabled) {
+            return "";
+        }
+
+        const lines = readKnowledgeEntries(layer)
+            .filter((entry) => layer.fields.every((field) => entry[field]))
+            .map((entry) => sanitizeInjectValue(layer.injectEntry(entry)));
+        if (lines.length === 0) {
+            return "";
+        }
+
+        return `${layer.injectHeading}\n${layer.injectIntro}\n${lines.join("\n")}`;
+    }).filter(Boolean).join("\n\n");
+}
+
+async function refreshKnowledgeInject() {
+    if (!ensureSettings().enabled) {
+        return;
+    }
+
+    const snapshot = buildKnowledgeSnapshot();
+    if (!snapshot) {
+        await flushKnowledgeInject();
+        return;
+    }
+
+    await getContext().executeSlashCommandsWithOptions(
+        `/inject id=${KNOWLEDGE_INJECT_ID} position=after ephemeral=true scan=true ${snapshot} |`,
+    );
+}
+
+async function flushKnowledgeInject() {
+    await getContext().executeSlashCommandsWithOptions(`/flushinject ${KNOWLEDGE_INJECT_ID} |`);
+}
+
+function readTimeline() {
+    return ensureChatState().timeline ?? "";
+}
+
+function writeTimeline(text) {
+    ensureChatState().timeline = text;
+    $("#psychograph_timeline").val(text);
+    renderSheetHeader();
+    getContext().saveMetadataDebounced();
+}
+
+// The model is asked for a sentence, not for markup, but it sees a bullet list
+// in the prompt and sometimes answers in kind.
+function normalizeTimelineEntry(entry) {
+    return String(entry ?? "").replace(/\s+/g, " ").replace(/^[-*]\s*/, "").trim();
+}
+
+function appendTimelineEntry(entry) {
+    const existing = readTimeline().trimEnd();
+    writeTimeline(existing ? `${existing}\n- ${entry}` : `- ${entry}`);
+}
+
+async function shouldKeepTimelineEntry(profileId, entry) {
+    try {
+        const verdict = await sendJsonSchemaRequest(
+            profileId,
+            "timeline_keep",
+            buildTimelineKeepSchema(),
+            buildTimelineKeepPrompt(entry),
+            TIMELINE_KEEP_MAX_TOKENS,
+        );
+        console.log(`[Psychograph] Timeline keep reasoning for "${entry}":`, verdict.reasoning);
+        return verdict.keep === true;
+    } catch (error) {
+        // The entry already passed the extraction call, and deleting a line is
+        // cheaper than rebuilding the chat to recover one.
+        console.error("[Psychograph] Timeline keep call failed, keeping the entry:", error);
+        return true;
+    }
+}
+
+// Both callers append to the same text blob and read it back as the prompt's
+// "already on the timeline", so they take turns rather than interleave.
+let timelineWork = Promise.resolve();
+
+function queueTimelineWork(task) {
+    timelineWork = timelineWork.catch(() => {}).then(task);
+    return timelineWork;
+}
+
+const TIMELINE_ADDED = "added";
+const TIMELINE_DISCARDED = "discarded";
+const TIMELINE_SKIPPED = "skipped";
+const TIMELINE_FAILED = "failed";
+
+async function extractTimelineEntry(profileId, message) {
+    const chatState = ensureChatState();
+
+    try {
+        const prompt = buildTimelinePrompt(readTimeline(), readMessageSpeaker(message), message.mes);
+        const result = await sendJsonSchemaRequest(profileId, "timeline_entry", buildTimelineSchema(), prompt, TIMELINE_ENTRY_MAX_TOKENS);
+        console.log("[Psychograph] Timeline reasoning:", result.reasoning);
+
+        const entry = normalizeTimelineEntry(result.entry);
+        if (result.significant !== true || !entry) {
+            return TIMELINE_SKIPPED;
+        }
+        if (!await shouldKeepTimelineEntry(profileId, entry)) {
+            return TIMELINE_DISCARDED;
+        }
+        if (!isCurrentChatState(chatState)) {
+            console.warn("[Psychograph] Chat changed during the timeline call, discarding the entry.");
+            return TIMELINE_SKIPPED;
+        }
+
+        appendTimelineEntry(entry);
+        return TIMELINE_ADDED;
+    } catch (error) {
+        console.error("[Psychograph] Timeline call failed:", error);
+        return TIMELINE_FAILED;
+    }
+}
+
+// Runs on the predecessor for the same reason the State pass does: the newest
+// message is still swipeable, and an entry written from a swipe that is then
+// replaced cannot be taken back out of an append-only list.
+async function extractTimelineForNewMessage(settings, profileId) {
+    if (!settings.timeline.autoExtract) {
+        return;
+    }
+
+    const message = getContext().chat.at(-2);
+    if (!isTimelineMessage(message, settings.timeline.includeHidden) || isTimelineExtracted(message)) {
+        return;
+    }
+    markTimelineExtracted(message);
+
+    await queueTimelineWork(() => extractTimelineEntry(profileId, message));
+    await refreshTimelineInject();
+}
+
+function knowledgeExtractedKey(layer) {
+    return `psychographKnowledge_${layer.id}`;
+}
+
+function isKnowledgeExtracted(layer, message) {
+    return Boolean(message?.extra?.[knowledgeExtractedKey(layer)]);
+}
+
+function markKnowledgeExtracted(layer, message) {
+    message.extra = message.extra || {};
+    message.extra[knowledgeExtractedKey(layer)] = true;
+    getContext().saveMetadataDebounced();
+}
+
+function readKnowledgeEntries(layer) {
+    return ensureChatState().knowledge[layer.id].entries;
+}
+
+function writeKnowledgeEntries(layer, entries) {
+    ensureChatState().knowledge[layer.id].entries = entries;
+    renderKnowledgeGroups();
+    getContext().saveMetadataDebounced();
+}
+
+function normalizeKnowledgeField(value) {
+    return String(value ?? "").replace(/\s+/g, " ").trim();
+}
+
+function readKnowledgeEntry(layer, raw) {
+    const entry = Object.fromEntries(layer.fields.map((field) => [field, normalizeKnowledgeField(raw?.[field])]));
+    return layer.fields.every((field) => entry[field]) ? entry : null;
+}
+
+function renderKnowledgeForPrompt(layer) {
+    const entries = readKnowledgeEntries(layer);
+    if (entries.length === 0) {
+        return layer.emptyPlaceholder;
+    }
+
+    if (!layer.groupBy) {
+        return entries.map((entry) => `- ${layer.renderEntry(entry)}`).join("\n");
+    }
+
+    const grouped = new Map();
+    for (const entry of entries) {
+        const group = entry[layer.groupBy] || "Unknown";
+        if (!grouped.has(group)) {
+            grouped.set(group, []);
+        }
+        grouped.get(group).push(entry);
+    }
+
+    return [...grouped.entries()]
+        .map(([group, groupEntries]) => `${group}\n${groupEntries.map((entry) => `- ${layer.renderEntry(entry)}`).join("\n")}`)
+        .join("\n\n");
+}
+
+// One queue per layer: two runs appending to the same list would each be told
+// the other's entry does not exist yet. Separate layers never touch the same
+// list, so they run side by side.
+const knowledgeWork = Object.fromEntries(KNOWLEDGE_KEYS.map((key) => [key, Promise.resolve()]));
+
+function queueKnowledgeWork(layer, task) {
+    knowledgeWork[layer.id] = knowledgeWork[layer.id].catch(() => {}).then(task);
+    return knowledgeWork[layer.id];
+}
+
+const KNOWLEDGE_ENTRY_MAX_TOKENS = 500;
+
+// Budget scales with the input: a profile establishes far more at once than a
+// single message does, and a truncated array comes back as invalid JSON, which
+// loses every entry rather than the tail.
+function knowledgeBudgetFor(text) {
+    return Math.min(1500, Math.max(KNOWLEDGE_ENTRY_MAX_TOKENS, Math.round(String(text).length / 4)));
+}
+
+const KNOWLEDGE_MERGE_MAX_TOKENS = 250;
+
+// Knowledge only. The timeline runs its own extraction and is deliberately left
+// out: its entries are events in an order, where two similar lines can both be
+// true, and its "already on the timeline" test is the significance filter
+// itself rather than a duplicate check.
+function isDuplicateSearchConfigured() {
+    const settings = ensureSettings().similarity;
+    return Boolean(settings.baseUrl && settings.rerankModel);
+}
+
+// Only entries about the same character or subject can be duplicates of each
+// other, so the comparison never leaves the group — cheaper, and it makes a
+// cross-character merge impossible rather than unlikely.
+function knowledgeSiblings(layer, candidate) {
+    const entries = readKnowledgeEntries(layer);
+    if (!layer.groupBy) {
+        return entries.map((entry, index) => ({ entry, index }));
+    }
+
+    const group = candidate[layer.groupBy];
+    return entries
+        .map((entry, index) => ({ entry, index }))
+        .filter(({ entry }) => entry[layer.groupBy] === group);
+}
+
+async function findKnowledgeDuplicate(layer, candidate) {
+    const siblings = knowledgeSiblings(layer, candidate);
+    if (siblings.length === 0 || !isDuplicateSearchConfigured()) {
+        return null;
+    }
+
+    try {
+        const scores = await rerankCandidates(
+            layer.injectEntry(candidate),
+            siblings.map(({ entry }) => layer.injectEntry(entry)),
+        );
+        const best = scores[0];
+        if (!best) {
+            return null;
+        }
+
+        const sibling = siblings[best.index];
+        const threshold = Number(ensureSettings().similarity.duplicateThreshold);
+        console.log(
+            `[Psychograph] ${layer.label} candidate "${layer.injectEntry(candidate)}" | closest "${layer.injectEntry(sibling.entry)}" | score ${best.score.toFixed(4)} | threshold ${threshold}`,
+        );
+        return best.score >= threshold ? sibling : null;
+    } catch (error) {
+        // A scorer that is down must not stop entries from being recorded.
+        console.error(`[Psychograph] ${layer.label} duplicate search failed, keeping the entry as new:`, error);
+        return null;
+    }
+}
+
+async function mergeKnowledgeEntries(layer, profileId, existing, candidate) {
+    try {
+        const result = await sendJsonSchemaRequest(
+            profileId,
+            `${layer.id}_merge`,
+            buildKnowledgeSchema(layer, "One concise sentence on what the two entries have in common."),
+            buildKnowledgeMergePrompt(layer, existing, candidate),
+            KNOWLEDGE_MERGE_MAX_TOKENS,
+        );
+        console.log(`[Psychograph] ${layer.label} merge reasoning:`, result.reasoning);
+        return readKnowledgeEntry(layer, result);
+    } catch (error) {
+        console.error(`[Psychograph] ${layer.label} merge call failed, keeping the entry that was already there:`, error);
+        return null;
+    }
+}
+
+// Every candidate is handled on its own and against the list as it stands, so
+// two near-identical entries from the same call meet each other too.
+async function absorbKnowledgeEntry(layer, profileId, candidate) {
+    const duplicate = await findKnowledgeDuplicate(layer, candidate);
+    if (!duplicate) {
+        writeKnowledgeEntries(layer, [...readKnowledgeEntries(layer), candidate]);
+        return "added";
+    }
+
+    if (!ensureSettings().similarity.mergeDuplicates) {
+        console.log(`[Psychograph] ${layer.label}: duplicate of #${duplicate.index + 1}, dropped.`);
+        return "duplicate";
+    }
+
+    const merged = await mergeKnowledgeEntries(layer, profileId, duplicate.entry, candidate);
+    if (!merged) {
+        return "duplicate";
+    }
+
+    const entries = [...readKnowledgeEntries(layer)];
+    entries[duplicate.index] = merged;
+    writeKnowledgeEntries(layer, entries);
+    return "merged";
+}
+
+async function runKnowledgeCall(layer, profileId, prompt, maxTokens, label) {
+    const chatState = ensureChatState();
+
+    try {
+        const schema = buildKnowledgeSchema(layer, "One concise sentence covering all findings, before answering.");
+        const result = await sendJsonSchemaRequest(profileId, `${layer.id}_${label}`, schema, prompt, maxTokens);
+        console.log(`[Psychograph] ${layer.label} ${label} reasoning:`, result.reasoning);
+
+        const found = (Array.isArray(result.entries) ? result.entries : [])
+            .map((entry) => readKnowledgeEntry(layer, entry))
+            .filter(Boolean);
+        if (found.length === 0) {
+            return 0;
+        }
+        if (!isCurrentChatState(chatState)) {
+            console.warn(`[Psychograph] Chat changed during the ${layer.label} call, discarding the entries.`);
+            return 0;
+        }
+
+        let recorded = 0;
+        for (const candidate of found) {
+            if (!isCurrentChatState(chatState)) {
+                return recorded;
+            }
+            if (await absorbKnowledgeEntry(layer, profileId, candidate) !== "duplicate") {
+                recorded += 1;
+            }
+        }
+        return recorded;
+    } catch (error) {
+        console.error(`[Psychograph] ${layer.label} ${label} call failed:`, error);
+        return 0;
+    }
+}
+
+function extractKnowledgeFromMessage(layer, profileId, message) {
+    return runKnowledgeCall(
+        layer,
+        profileId,
+        layer.buildPrompt(renderKnowledgeForPrompt(layer), readMessageSpeaker(message), message.mes),
+        KNOWLEDGE_ENTRY_MAX_TOKENS,
+        "message",
+    );
+}
+
+// The character's own fields and the user persona are separate calls: one
+// profile per call is what lets the model put a name on the entries.
+function readKnowledgeSeedSources() {
+    const context = getContext();
+    const fields = context.getCharacterCardFields();
+
+    return [
+        { name: context.name2, text: [fields.description, fields.personality].filter(Boolean).join("\n\n") },
+        { name: context.name1, text: fields.persona },
+    ].filter((source) => source.name && String(source.text ?? "").trim());
+}
+
+async function seedKnowledgeFromCard(layer, profileId) {
+    const sources = readKnowledgeSeedSources();
+    if (sources.length === 0) {
+        console.log(`[Psychograph] ${layer.label} seeding: nothing on the card to seed from, skipping.`);
+        return 0;
+    }
+
+    let added = 0;
+    for (const source of sources) {
+        added += await runKnowledgeCall(
+            layer,
+            profileId,
+            layer.buildSeedPrompt(source.name, source.text, renderKnowledgeForPrompt(layer)),
+            knowledgeBudgetFor(source.text),
+            "seed",
+        );
+    }
+    return added;
+}
+
+async function extractKnowledgeForNewMessage(layer, settings, profileId) {
+    const layerSettings = settings.knowledge[layer.id];
+    if (!layerSettings.autoExtract) {
+        return;
+    }
+
+    const chatState = ensureChatState();
+    const message = getContext().chat.at(-2);
+    // Seeding runs before the first message is read rather than off a message
+    // id, so it also works when the extension is switched on mid-chat.
+    const needsSeed = !chatState.knowledge[layer.id].seeded;
+    const readsMessage = isTimelineMessage(message, layerSettings.includeHidden)
+        && !isKnowledgeExtracted(layer, message);
+    if (!needsSeed && !readsMessage) {
+        return;
+    }
+
+    if (needsSeed) {
+        chatState.knowledge[layer.id].seeded = true;
+    }
+    if (readsMessage) {
+        markKnowledgeExtracted(layer, message);
+    }
+    getContext().saveMetadataDebounced();
+
+    await queueKnowledgeWork(layer, async () => {
+        if (needsSeed) {
+            await seedKnowledgeFromCard(layer, profileId);
+        }
+        if (!readsMessage) {
+            return;
+        }
+
+        await extractKnowledgeFromMessage(layer, profileId, message);
+    });
+}
+
+async function rerunKnowledgeExtractionNow(layer) {
+    const settings = ensureSettings();
+    if (!settings.connectionProfile) {
+        toastr.warning(NO_PROFILE_WARNING, "Psychograph");
+        return;
+    }
+
+    const message = getContext().chat.at(-1);
+    if (!isTimelineMessage(message, settings.knowledge[layer.id].includeHidden)) {
+        toastr.warning("The last message is a system or hidden message, nothing to analyze.", "Psychograph");
+        return;
+    }
+
+    toastr.info(`Checking the last message for ${layer.label.toLowerCase()}…`, "Psychograph");
+    captureUndoSnapshot(`the ${layer.label.toLowerCase()} extraction`);
+    const added = await queueKnowledgeWork(layer, () => extractKnowledgeFromMessage(layer, settings.connectionProfile, message));
+    markKnowledgeExtracted(layer, message);
+    noteLastExtraction(message, layer.label);
+
+    if (added > 0) {
+        toastr.success(`${added} new ${added === 1 ? "entry" : "entries"}.`, "Psychograph");
+    } else {
+        toastr.info(`Nothing for ${layer.label.toLowerCase()} in that message.`, "Psychograph");
+    }
+}
+
+const knowledgeBuildRunning = {};
+const knowledgeBuildCancelled = {};
+const knowledgeBuildStatus = {};
+
+function renderKnowledgeBuildStatus() {
+    $("#psychograph_knowledge_status").text(
+        KNOWLEDGE_KEYS.map((key) => knowledgeBuildStatus[key]).filter(Boolean).join(" · "),
+    );
+}
+
+// The three layers never read each other's list, so their builds run side by
+// side. Within a layer the calls stay in order: each one is handed the list so
+// far as "already known", which is the only thing stopping the next message
+// from recording what the previous one just did.
+async function buildAllKnowledge() {
+    if (KNOWLEDGE_KEYS.some((key) => knowledgeBuildRunning[key])) {
+        for (const key of KNOWLEDGE_KEYS) {
+            knowledgeBuildCancelled[key] = true;
+        }
+        return;
+    }
+
+    $("#psychograph_knowledge_build").text("Stop");
+    try {
+        await Promise.all(KNOWLEDGE_KEYS.map((key) => buildKnowledge(KNOWLEDGE_LAYERS[key])));
+    } finally {
+        $("#psychograph_knowledge_build").text("Backfill");
+    }
+}
+
+// Same shape as the timeline build, and for the same reason the list is handed
+// to every call: nothing here dedupes in code, the list in the prompt does it.
+async function buildKnowledge(layer) {
+    if (knowledgeBuildRunning[layer.id]) {
+        knowledgeBuildCancelled[layer.id] = true;
+        return;
+    }
+
+    const settings = ensureSettings();
+    const profileId = settings.connectionProfile;
+    if (!profileId) {
+        toastr.warning(NO_PROFILE_WARNING, "Psychograph");
+        return;
+    }
+
+    const layerSettings = settings.knowledge[layer.id];
+    const messages = getContext().chat.filter((message) => isTimelineMessage(message, layerSettings.includeHidden));
+    if (messages.length === 0) {
+        toastr.info("No messages in this chat yet.", "Psychograph");
+        return;
+    }
+
+    const chatState = ensureChatState();
+    captureUndoSnapshot(`the ${layer.label.toLowerCase()} backfill`);
+    knowledgeBuildRunning[layer.id] = true;
+    knowledgeBuildCancelled[layer.id] = false;
+
+    let added = 0;
+    try {
+        // Before message #0: what the card establishes may never come up in the
+        // chat at all, and for a profile that is most of what there is to know.
+        knowledgeBuildStatus[layer.id] = `${layer.label}: profile…`;
+        renderKnowledgeBuildStatus();
+        chatState.knowledge[layer.id].seeded = true;
+        added += await queueKnowledgeWork(layer, () => seedKnowledgeFromCard(layer, profileId));
+
+        for (let i = 0; i < messages.length; i++) {
+            if (knowledgeBuildCancelled[layer.id]) {
+                break;
+            }
+            if (!isCurrentChatState(chatState)) {
+                console.warn(`[Psychograph] Chat changed during the ${layer.label} build, stopping.`);
+                break;
+            }
+
+            knowledgeBuildStatus[layer.id] = `${layer.label} ${i + 1}/${messages.length}, ${added} found`;
+            renderKnowledgeBuildStatus();
+            added += await queueKnowledgeWork(layer, () => extractKnowledgeFromMessage(layer, profileId, messages[i]));
+            markKnowledgeExtracted(layer, messages[i]);
+        }
+
+        const summary = `${added} found, ${readKnowledgeEntries(layer).length} on the list.`;
+        if (knowledgeBuildCancelled[layer.id]) {
+            toastr.info(`Stopped. ${summary}`, "Psychograph");
+        } else {
+            toastr.success(`${layer.label} built: ${summary}`, "Psychograph");
+        }
+    } finally {
+        knowledgeBuildRunning[layer.id] = false;
+        knowledgeBuildStatus[layer.id] = "";
+        renderKnowledgeBuildStatus();
+    }
+}
+
+let timelineBuildRunning = false;
+let timelineBuildCancelled = false;
+
+// Every message is offered to the model, including ones an earlier build
+// already saw: what keeps a rebuild from duplicating entries is the timeline
+// itself being in the prompt, not a per-message marker.
+async function buildTimeline() {
+    if (timelineBuildRunning) {
+        timelineBuildCancelled = true;
+        return;
+    }
+
+    const profileId = ensureSettings().connectionProfile;
+    if (!profileId) {
+        toastr.warning(NO_PROFILE_WARNING, "Psychograph");
+        return;
+    }
+
+    const includeHidden = ensureSettings().timeline.includeHidden;
+    const messages = getContext().chat.filter((message) => isTimelineMessage(message, includeHidden));
+    if (messages.length === 0) {
+        toastr.info("No messages in this chat yet.", "Psychograph");
+        return;
+    }
+
+    const chatState = ensureChatState();
+    captureUndoSnapshot("the timeline backfill");
+    timelineBuildRunning = true;
+    timelineBuildCancelled = false;
+    $("#psychograph_timeline_build").text("Stop");
+
+    // Every message lands in exactly one of these, so the status line adds up:
+    // most messages produce no candidate at all, which the earlier line left
+    // unaccounted for and made the numbers look wrong.
+    const tally = { [TIMELINE_ADDED]: 0, [TIMELINE_DISCARDED]: 0, [TIMELINE_SKIPPED]: 0, [TIMELINE_FAILED]: 0 };
+    let processed = 0;
+
+    const renderBuildStatus = () => {
+        const parts = [
+            `${processed}/${messages.length} messages`,
+            `${tally[TIMELINE_ADDED]} added`,
+            `${tally[TIMELINE_DISCARDED]} discarded`,
+            `${tally[TIMELINE_SKIPPED]} nothing to log`,
+        ];
+        if (tally[TIMELINE_FAILED] > 0) {
+            parts.push(`${tally[TIMELINE_FAILED]} failed`);
+        }
+        $("#psychograph_timeline_status").text(`${parts.join(" · ")}…`);
+    };
+
+    try {
+        renderBuildStatus();
+        for (let i = 0; i < messages.length; i++) {
+            if (timelineBuildCancelled) {
+                break;
+            }
+            if (!isCurrentChatState(chatState)) {
+                console.warn("[Psychograph] Chat changed during the timeline build, stopping.");
+                break;
+            }
+
+            const outcome = await queueTimelineWork(() => extractTimelineEntry(profileId, messages[i]));
+            markTimelineExtracted(messages[i]);
+            tally[outcome] += 1;
+            processed += 1;
+            renderBuildStatus();
+        }
+
+        const failures = tally[TIMELINE_FAILED] > 0 ? `, ${tally[TIMELINE_FAILED]} calls failed` : "";
+        const summary = `${processed} messages read, ${tally[TIMELINE_ADDED]} entries added, ${tally[TIMELINE_DISCARDED]} discarded as too minor${failures}.`;
+        if (timelineBuildCancelled) {
+            toastr.info(`Stopped: ${summary}`, "Psychograph");
+        } else {
+            toastr.success(`Timeline built: ${summary}`, "Psychograph");
+        }
+    } finally {
+        timelineBuildRunning = false;
+        $("#psychograph_timeline_build").text("Backfill");
+        $("#psychograph_timeline_status").text("");
+    }
+}
+
+// Rerank and embeddings go straight to the user's own server: SillyTavern has
+// no route for either, and its one vector endpoint applies the threshold on the
+// server and returns no scores, which is exactly what makes a threshold
+// impossible to calibrate.
+// A page served over HTTPS cannot call a plain-HTTP host: the browser blocks it
+// as mixed content before the request leaves, and all fetch reports back is
+// "Failed to fetch". localhost is exempt, browsers treat it as trustworthy.
+function describeMixedContent(baseUrl) {
+    try {
+        const target = new URL(baseUrl);
+        const isLocal = ["localhost", "127.0.0.1", "[::1]", "::1"].includes(target.hostname);
+        if (window.location.protocol === "https:" && target.protocol === "http:" && !isLocal) {
+            return `${target.host} is plain HTTP and this page is HTTPS, so the browser blocks the request before it is sent. Serve it over HTTPS, or proxy it under this origin.`;
+        }
+    } catch (error) {
+        return "The base URL is not a valid URL.";
+    }
+    return "";
+}
+
+async function similarityRequest(path, body) {
+    const settings = ensureSettings().similarity;
+    const blocked = describeMixedContent(settings.baseUrl);
+    if (blocked) {
+        throw new Error(blocked);
+    }
+    const headers = { "Content-Type": "application/json" };
+    if (settings.apiKey) {
+        // Two spellings, because llama.cpp reads the first and TabbyAPI the
+        // second, and the servers ignore what they do not know.
+        headers.Authorization = `Bearer ${settings.apiKey}`;
+        headers["X-Api-Key"] = settings.apiKey;
+    }
+
+    const response = await fetch(`${settings.baseUrl.replace(/\/$/, "")}${path}`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify(body),
+    });
+    if (!response.ok) {
+        throw new Error(`${path} failed: ${response.status} ${(await response.text()).slice(0, 200)}`);
+    }
+    return response.json();
+}
+
+const RERANK_PATHS = ["/v1/rerank", "/rerank"];
+
+// llama.cpp answers on both spellings, TabbyAPI and others on one of them, so
+// the first that works is remembered rather than asked for in the settings.
+async function rerankCandidates(query, documents) {
+    const settings = ensureSettings().similarity;
+    const paths = settings.rerankPath ? [settings.rerankPath, ...RERANK_PATHS] : RERANK_PATHS;
+    let lastError = null;
+
+    for (const path of [...new Set(paths)]) {
+        try {
+            const result = await similarityRequest(path, {
+                model: settings.rerankModel,
+                query,
+                documents,
+                top_n: documents.length,
+            });
+            const results = result.results ?? result.data ?? [];
+            if (settings.rerankPath !== path) {
+                settings.rerankPath = path;
+                saveSettingsDebounced();
+            }
+            return results
+                .map((entry) => ({ index: Number(entry.index), score: Number(entry.relevance_score ?? entry.score) }))
+                .filter((entry) => Number.isInteger(entry.index) && Number.isFinite(entry.score))
+                .sort((a, b) => b.score - a.score);
+        } catch (error) {
+            lastError = error;
+        }
+    }
+
+    throw lastError ?? new Error("No rerank endpoint answered.");
+}
+
+async function embedText(input) {
+    const settings = ensureSettings().similarity;
+    const result = await similarityRequest("/v1/embeddings", { model: settings.embeddingModel, input });
+    const embedding = result.data?.[0]?.embedding;
+    if (!Array.isArray(embedding)) {
+        throw new Error("The embeddings response carried no vector.");
+    }
+    return embedding;
+}
+
+// Reports a same/different pair of scores rather than just "it works": those
+// two numbers are the first real data point for where a threshold belongs on
+// this particular model.
+async function testSimilarityService() {
+    const settings = ensureSettings().similarity;
+    const status = $("#psychograph_similarity_status");
+    if (!settings.baseUrl) {
+        status.text("Set the base URL first.");
+        return;
+    }
+
+    const blocked = describeMixedContent(settings.baseUrl);
+    if (blocked) {
+        status.text(blocked);
+        return;
+    }
+
+    status.text("Testing…");
+    const lines = [];
+
+    try {
+        const scores = await rerankCandidates("she goes quiet whenever she smells smoke", [
+            "goes silent when there is smoke in the air",
+            "keeps a spare key under the doormat",
+        ]);
+        const byIndex = Object.fromEntries(scores.map((entry) => [entry.index, entry.score.toFixed(4)]));
+        lines.push(`rerank ${settings.rerankPath}: same ${byIndex[0]}, unrelated ${byIndex[1]}`);
+    } catch (error) {
+        console.error("[Psychograph] Rerank test failed:", error);
+        lines.push(`rerank: ${error.message}`);
+    }
+
+    try {
+        const vector = await embedText("test");
+        lines.push(`embeddings: ${vector.length} dimensions`);
+    } catch (error) {
+        console.error("[Psychograph] Embeddings test failed:", error);
+        lines.push(`embeddings: ${error.message}`);
+    }
+
+    status.text(lines.join(" · "));
 }
 
 // Stored in chat_metadata (saved inside the chat file itself) rather than
@@ -1282,41 +2830,55 @@ function handleChatMessageEvent() {
             return;
         }
 
-        const eligibleAreaKeys = Object.keys(AREA_SLOT_CONFIGS).filter((key) =>
-            settings.state.areas[key].enabled);
-        if (eligibleAreaKeys.length === 0) {
-            return;
-        }
-
         const profileId = settings.connectionProfile;
         if (!profileId) {
             warnOnce("profile:none", NO_PROFILE_WARNING);
-            console.warn("[Psychograph] Area gate: no connection profile configured, skipping.");
+            console.warn("[Psychograph] No connection profile configured, skipping extraction.");
             return;
         }
 
-        await runExclusiveStateExtraction(async () => {
-            if (!ensureChatState().seeded) {
-                await seedChatStateFromCard(eligibleAreaKeys);
-            }
+        captureUndoSnapshot("the last message");
 
-            const chat = getContext().chat;
-            // The newest message is still swipeable, and a swipe re-fires this
-            // event with new text — extracting it would apply a second diff on
-            // top of state the first run already moved. The predecessor is
-            // settled, so it can only ever be extracted once.
-            const message = chat[chat.length - 2];
-            if (!isStoryMessage(message) || isStateExtracted(message)) {
-                return;
-            }
-            markStateExtracted(message);
-
-            const speaker = readMessageSpeaker(message);
-            const gatedAreaKeys = await runAreaGate(profileId, eligibleAreaKeys, message.mes, speaker);
-            await Promise.all(gatedAreaKeys.map((areaKey) => runAreaExtraction(areaKey, message.mes, speaker)));
-            await refreshStateInject();
-        });
+        // The two layers write to different places and neither reads the
+        // other's result, so the timeline call rides alongside the State pass
+        // rather than after it.
+        await Promise.all([
+            extractStateForNewMessage(settings, profileId),
+            extractTimelineForNewMessage(settings, profileId),
+            ...KNOWLEDGE_KEYS.map((key) => extractKnowledgeForNewMessage(KNOWLEDGE_LAYERS[key], settings, profileId)),
+        ]);
     };
+}
+
+async function extractStateForNewMessage(settings, profileId) {
+    const eligibleAreaKeys = Object.keys(AREA_SLOT_CONFIGS).filter((key) =>
+        settings.state.areas[key].enabled);
+    if (eligibleAreaKeys.length === 0) {
+        return;
+    }
+
+    await runExclusiveStateExtraction(async () => {
+        if (!ensureChatState().seeded) {
+            await seedChatStateFromCard(eligibleAreaKeys);
+        }
+
+        const chat = getContext().chat;
+        // The newest message is still swipeable, and a swipe re-fires this
+        // event with new text — extracting it would apply a second diff on
+        // top of state the first run already moved. The predecessor is
+        // settled, so it can only ever be extracted once.
+        const message = chat[chat.length - 2];
+        if (!isStoryMessage(message) || isStateExtracted(message)) {
+            return;
+        }
+        markStateExtracted(message);
+
+        const speaker = readMessageSpeaker(message);
+        noteLastExtraction(message, "state");
+        const gatedAreaKeys = await runAreaGate(profileId, eligibleAreaKeys, message.mes, speaker);
+        await Promise.all(gatedAreaKeys.map((areaKey) => runAreaExtraction(areaKey, message.mes, speaker)));
+        await refreshStateInject();
+    });
 }
 
 function bindChatEvents() {
@@ -1334,8 +2896,10 @@ function bindChatEvents() {
     eventSource.on(event_types.GENERATION_AFTER_COMMANDS, handleCogneeRecall);
     eventSource.on(event_types.GENERATION_ENDED, flushCogneeRecallInject);
 
-    eventSource.on(event_types.GENERATION_AFTER_COMMANDS, handleStateInjectForGeneration);
+    eventSource.on(event_types.GENERATION_AFTER_COMMANDS, handleInjectsForGeneration);
     eventSource.on(event_types.GENERATION_ENDED, flushStateInject);
+    eventSource.on(event_types.GENERATION_ENDED, flushTimelineInject);
+    eventSource.on(event_types.GENERATION_ENDED, flushKnowledgeInject);
 
     // Slot inputs show the current chat's state — without this they'd keep
     // displaying whatever chat was open when the panel was last rendered.
@@ -1434,7 +2998,9 @@ async function rerunAreaExtractionNow(areaKey) {
     const config = AREA_SLOT_CONFIGS[areaKey];
     const ran = await runExclusiveStateExtraction(async () => {
         toastr.info(`Analyzing ${config.label.toLowerCase()} for the last message…`, "Psychograph");
+        captureUndoSnapshot(`the ${config.label.toLowerCase()} extraction`);
         await runAreaExtraction(areaKey, lastMessage.mes, readMessageSpeaker(lastMessage));
+        noteLastExtraction(lastMessage, config.label);
     });
     if (!ran) {
         toastr.warning("Another extraction is still running, try again in a moment.", "Psychograph");
@@ -1471,83 +3037,488 @@ async function seedChatStateFromCard(eligibleAreaKeys) {
     }));
 }
 
-async function initAreaFromDescription(areaKey) {
+const SHEET_ID = "psychograph_sheet";
+const SHEET_TIMELINE_TAB = "timeline";
+
+
+let activeSheetTab = STATE_AREAS[0].key;
+
+// "bodyChanges" -> "Body Changes". Every slot name in AREA_SLOT_CONFIGS reads
+// as its own label this way, so the sheet needs no second list to maintain.
+function humanizeSlot(slot) {
+    return slot.replace(/([A-Z])/g, " $1").replace(/^./, (character) => character.toUpperCase());
+}
+
+function buildSheetTabsHtml() {
+    const tabs = [
+        ...STATE_AREAS.map(({ key }) => ({ key, label: AREA_SLOT_CONFIGS[key].label })),
+        { key: SHEET_TIMELINE_TAB, label: "Timeline" },
+        { key: SHEET_KNOWLEDGE_TAB, label: "Knowledge" },
+    ];
+    return tabs.map(({ key, label }) => `
+        <div class="psychograph-sheet-tab" data-tab="${key}">${label}</div>
+    `).join("");
+}
+
+function buildSheetAreaPaneHtml(areaKey) {
     const config = AREA_SLOT_CONFIGS[areaKey];
-    const { text, missingLabel } = readAreaSeedText(config);
+    const fields = config.slots.map((slot) => `
+        <label for="psychograph_state_${config.id}_slot_${slot}">${humanizeSlot(slot)}</label>
+        <input id="psychograph_state_${config.id}_slot_${slot}" type="text" class="text_pole" placeholder="${config.slotPlaceholders[slot]}" />
+    `).join("");
 
-    if (!text || !text.trim()) {
-        toastr.warning(missingLabel, "Psychograph");
-        return;
-    }
-
-    const ran = await runExclusiveStateExtraction(async () => {
-        toastr.info(`Initializing ${config.label.toLowerCase()} from description…`, "Psychograph");
-        ensureChatState().seeded = true;
-        await runAreaExtraction(areaKey, text, "", SEED_MODE);
-        getContext().saveMetadataDebounced();
-    });
-    if (!ran) {
-        toastr.warning("Another extraction is still running, try again in a moment.", "Psychograph");
-    }
-}
-
-function togglePsychographSubmenu(anchorElement) {
-    const submenu = $("#psychograph_submenu");
-
-    if (submenu.hasClass("shown")) {
-        submenu.removeClass("shown");
-        return;
-    }
-
-    // position: absolute + getBoundingClientRect() + window.scrollX/Y, and
-    // toggled via our own "shown" class rather than the `hidden` attribute —
-    // this mirrors the GuidedGenerations extension's menu (confirmed working
-    // in the same SillyTavern instance), because relying on `hidden` turned
-    // out to be the actual bug: our container used SillyTavern's own
-    // `.list-group` class, which SillyTavern's core CSS apparently styles
-    // with a `display` that outranks the browser's default `[hidden]` rule
-    // (both are author-level rules of equal specificity, so `[hidden]`
-    // doesn't automatically win) — the submenu was never truly display:none,
-    // just sitting whereever it was last positioned (or its unset default).
-    const rect = anchorElement.getBoundingClientRect();
-    submenu.css({
-        top: `${rect.top + window.scrollY - 5}px`,
-        left: `${rect.left + window.scrollX}px`,
-    });
-    submenu.addClass("shown");
-}
-
-function buildAreaSubmenuHtml() {
-    return STATE_AREAS.map(({ key }) => {
-        const config = AREA_SLOT_CONFIGS[key];
-        return `
-            <div class="psychograph-menu-divider">${config.label}</div>
-            <div id="psychograph_action_init_${config.id}" class="list-group-item">
-                <div class="fa-solid fa-bolt extensionsMenuExtensionButton"></div>
-                <span>Init ${config.label}</span>
+    return `
+        <div class="psychograph-sheet-pane" data-tab="${areaKey}">
+            <div class="psychograph-sheet-pane-header">
+                <label class="checkbox_label" for="psychograph_state_${config.id}_enabled">
+                    <input id="psychograph_state_${config.id}_enabled" type="checkbox" />
+                    Enabled
+                </label>
+                <span class="psychograph-sheet-count">${config.slots.length} fields</span>
             </div>
-            <div id="psychograph_action_${config.id}" class="list-group-item">
-                <div class="fa-solid ${config.icon} extensionsMenuExtensionButton"></div>
-                <span>${config.label}</span>
+            <div class="psychograph-sheet-fields">${fields}</div>
+        </div>
+    `;
+}
+
+function buildSheetTimelinePaneHtml() {
+    return `
+        <div class="psychograph-sheet-pane" data-tab="${SHEET_TIMELINE_TAB}">
+            <div class="psychograph-sheet-pane-header">
+                <label class="checkbox_label" for="psychograph_timeline_auto_extract">
+                    <input id="psychograph_timeline_auto_extract" type="checkbox" />
+                    Enabled
+                </label>
+                <span id="psychograph_sheet_timeline_count" class="psychograph-sheet-count"></span>
+                <div class="psychograph-sheet-options-toggle fa-solid fa-gear interactable" data-tab="${SHEET_TIMELINE_TAB}" title="Settings" tabindex="0"></div>
+            </div>
+            <div class="psychograph-sheet-actions">
+                <div id="psychograph_timeline_build" class="menu_button" title="Read every message in this chat">Backfill</div>
+                <div id="psychograph_timeline_clear" class="menu_button">Clear</div>
+            </div>
+            <small id="psychograph_timeline_status" class="psychograph-sheet-hint"></small>
+            <div class="psychograph-sheet-options" data-tab="${SHEET_TIMELINE_TAB}">
+                <label class="checkbox_label" for="psychograph_timeline_include_hidden">
+                    <input id="psychograph_timeline_include_hidden" type="checkbox" />
+                    Include hidden messages
+                </label>
+                <label class="checkbox_label" for="psychograph_timeline_inject_enabled">
+                    <input id="psychograph_timeline_inject_enabled" type="checkbox" />
+                    Inject into the prompt
+                </label>
+                <label for="psychograph_timeline_inject_limit">Most recent entries only (0 = all)</label>
+                <input id="psychograph_timeline_inject_limit" type="number" min="0" step="1" class="text_pole" />
+            </div>
+            <div class="psychograph-sheet-fields">
+                <label for="psychograph_timeline">Current timeline</label>
+                <textarea id="psychograph_timeline" class="text_pole textarea_compact" rows="12" placeholder="- ..."></textarea>
+            </div>
+        </div>
+    `;
+}
+
+const SHEET_KNOWLEDGE_TAB = "knowledge";
+
+function buildSheetKnowledgePaneHtml() {
+    const layerSettings = KNOWLEDGE_KEYS.map((key) => {
+        const layer = KNOWLEDGE_LAYERS[key];
+        return `
+            <div class="psychograph-knowledge-settings">
+                <label class="checkbox_label" for="psychograph_${key}_auto_extract">
+                    <input id="psychograph_${key}_auto_extract" type="checkbox" />
+                    ${layer.label}: extract on every message
+                </label>
+                <label class="checkbox_label" for="psychograph_${key}_include_hidden">
+                    <input id="psychograph_${key}_include_hidden" type="checkbox" />
+                    ${layer.label}: include hidden messages
+                </label>
+                <label class="checkbox_label" for="psychograph_${key}_inject_enabled">
+                    <input id="psychograph_${key}_inject_enabled" type="checkbox" />
+                    ${layer.label}: inject into the prompt
+                </label>
             </div>
         `;
     }).join("");
+
+    return `
+        <div class="psychograph-sheet-pane" data-tab="${SHEET_KNOWLEDGE_TAB}">
+            <div class="psychograph-sheet-pane-header">
+                <span id="psychograph_knowledge_count" class="psychograph-sheet-count"></span>
+                <div class="psychograph-sheet-options-toggle fa-solid fa-gear interactable" data-tab="${SHEET_KNOWLEDGE_TAB}" title="Settings" tabindex="0"></div>
+            </div>
+            <div class="psychograph-sheet-actions">
+                <div id="psychograph_knowledge_build" class="menu_button" title="Read the character profiles, then every message in this chat">Backfill</div>
+                <div id="psychograph_knowledge_clear" class="menu_button" title="Empty all three lists for this chat">Clear all</div>
+            </div>
+            <small id="psychograph_knowledge_status" class="psychograph-sheet-hint"></small>
+            <div class="psychograph-sheet-options" data-tab="${SHEET_KNOWLEDGE_TAB}">${layerSettings}</div>
+            <div id="psychograph_knowledge_groups"></div>
+            <div id="psychograph_knowledge_add_group" class="psychograph-knowledge-add interactable" title="Add an entry for someone new" tabindex="0">
+                <i class="fa-solid fa-plus"></i> Add someone
+            </div>
+        </div>
+    `;
 }
 
-function bindAreaSubmenuEvents() {
-    for (const { key } of STATE_AREAS) {
-        const config = AREA_SLOT_CONFIGS[key];
+function buildSheetBodyHtml() {
+    return `
+        <div class="psychograph-sheet-title">
+            <span class="psychograph-sheet-heading">Character Sheet</span>
+            <span id="psychograph_sheet_character" class="psychograph-sheet-subject"></span>
+        </div>
+        <div class="psychograph-sheet-tabs">${buildSheetTabsHtml()}</div>
+        <div class="psychograph-sheet-applies">
+            <label for="psychograph_state_target">Applies to</label>
+            <select id="psychograph_state_target" class="text_pole" title="Whether tracked state reflects the character or the user persona. Extraction runs on every message either way.">
+                <option value="char">Character</option>
+                <option value="user">User persona</option>
+            </select>
+        </div>
+        <div class="psychograph-sheet-content">
+            ${STATE_AREAS.map(({ key }) => buildSheetAreaPaneHtml(key)).join("")}
+            ${buildSheetTimelinePaneHtml()}
+            ${buildSheetKnowledgePaneHtml()}
+        </div>
+        <div class="psychograph-sheet-footer">
+            <span id="psychograph_sheet_status" class="psychograph-sheet-hint"></span>
+            <div class="psychograph-sheet-footer-buttons">
+                <div id="psychograph_sheet_restore" class="menu_button" title="Undo what the last extraction changed">Restore</div>
+                <div id="psychograph_sheet_extract" class="menu_button">Extract now</div>
+            </div>
+        </div>
+    `;
+}
 
-        $(`#psychograph_action_${config.id}`).on("click", async function () {
-            $("#psychograph_submenu").removeClass("shown");
-            await rerunAreaExtractionNow(key);
-        });
+// Same construction SillyTavern uses for its own floating panels (see the
+// Summarize extension): the zoomed-avatar template carries the control bar and
+// the classes dragElement expects, and the grabber's id has to be the panel's
+// id with "header" appended or dragElement won't find it.
+function buildSheetPanel() {
+    if ($(`#${SHEET_ID}`).length > 0) {
+        return;
+    }
 
-        $(`#psychograph_action_init_${config.id}`).on("click", async function () {
-            $("#psychograph_submenu").removeClass("shown");
-            await initAreaFromDescription(key);
+    const movingDivs = document.getElementById("movingDivs");
+    if (!movingDivs) {
+        console.warn("[Psychograph] #movingDivs not found, skipping the character sheet panel.");
+        return;
+    }
+
+    const template = $("#zoomed_avatar_template").html();
+    const panel = template ? $(template) : $("<div></div>");
+    panel
+        .attr("id", SHEET_ID)
+        .removeClass("zoomed_avatar")
+        .addClass("draggable psychograph-sheet")
+        .empty()
+        .append(`
+            <div class="panelControlBar flex-container">
+                <div id="${SHEET_ID}header" class="fa-solid fa-grip drag-grabber hoverglow"></div>
+                <div id="psychograph_sheet_close" class="fa-solid fa-circle-xmark hoverglow dragClose"></div>
+            </div>
+            <div class="psychograph-sheet-body">${buildSheetBodyHtml()}</div>
+        `);
+
+    $(movingDivs).append(panel);
+    loadMovingUIState();
+    dragElement(panel);
+    selectSheetTab(activeSheetTab);
+}
+
+function toggleSheetPanel() {
+    const panel = $(`#${SHEET_ID}`);
+    if (panel.length === 0) {
+        return;
+    }
+    if (panel.hasClass("shown")) {
+        panel.removeClass("shown");
+        return;
+    }
+    renderChatState();
+    panel.addClass("shown");
+}
+
+function selectSheetTab(tab) {
+    activeSheetTab = tab;
+    $(`#${SHEET_ID} .psychograph-sheet-tab`).each(function () {
+        $(this).toggleClass("active", String($(this).data("tab")) === tab);
+    });
+    $(`#${SHEET_ID} .psychograph-sheet-pane`).each(function () {
+        $(this).toggleClass("active", String($(this).data("tab")) === tab);
+    });
+}
+
+function renderSheetHeader() {
+    $("#psychograph_sheet_character").text(readTargetName());
+    const entries = readTimeline().split("\n").filter((line) => line.trim()).length;
+    $("#psychograph_sheet_timeline_count").text(`${entries} ${entries === 1 ? "entry" : "entries"}`);
+    renderKnowledgeGroups();
+    renderSheetFooter();
+}
+
+function escapeHtmlAttribute(value) {
+    return String(value ?? "").replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+// Section state is per character and layer, and deliberately not persisted: it
+// is how the panel looks right now, not something about the chat. Only sections
+// the user has actually toggled are in here — everything else follows the
+// default of "open when it has entries", which is why an empty section can
+// still be opened to add the first one.
+const knowledgeSectionState = new Map();
+
+function knowledgeSectionKey(group, layerKey) {
+    return `${group}::${layerKey}`;
+}
+
+const UNNAMED_KNOWLEDGE_GROUP = "Someone";
+
+// Groups in order of first appearance, across all three layers at once — the
+// sheet is read per character, not per layer.
+function collectKnowledgeGroups() {
+    const groups = new Map();
+
+    for (const key of KNOWLEDGE_KEYS) {
+        const layer = KNOWLEDGE_LAYERS[key];
+        readKnowledgeEntries(layer).forEach((entry, index) => {
+            const name = entry[layer.groupBy] || "";
+            if (!groups.has(name)) {
+                groups.set(name, Object.fromEntries(KNOWLEDGE_KEYS.map((layerKey) => [layerKey, []])));
+            }
+            groups.get(name)[key].push({ entry, index });
         });
     }
+
+    return groups;
+}
+
+function buildKnowledgeEntryHtml(layerKey, { entry, index }) {
+    const layer = KNOWLEDGE_LAYERS[layerKey];
+    const fields = layer.fields
+        .filter((field) => field !== layer.groupBy)
+        .map((field) => `
+            <input type="text" class="psychograph-knowledge-input" data-field="${field}"
+                placeholder="${humanizeSlot(field).toLowerCase()}" value="${escapeHtmlAttribute(entry[field])}" />
+        `).join("");
+
+    // Redundant with the heading above it, and there anyway: it is the only way
+    // to move a single entry to someone else without touching its neighbours.
+    const owner = `
+        <label class="psychograph-knowledge-owner">
+            <i class="fa-solid fa-user"></i>
+            <input type="text" class="psychograph-knowledge-input psychograph-knowledge-owner-input"
+                data-field="${layer.groupBy}" placeholder="${UNNAMED_KNOWLEDGE_GROUP}"
+                title="Move just this entry to someone else"
+                value="${escapeHtmlAttribute(entry[layer.groupBy])}" />
+        </label>
+    `;
+
+    return `
+        <div class="psychograph-knowledge-entry" data-layer="${layerKey}" data-index="${index}">
+            <div class="psychograph-knowledge-entry-fields">${fields}${owner}</div>
+            <div class="psychograph-knowledge-delete fa-solid fa-xmark interactable" title="Delete entry" tabindex="0"></div>
+        </div>
+    `;
+}
+
+function buildKnowledgeSectionHtml(group, layerKey, rows) {
+    const layer = KNOWLEDGE_LAYERS[layerKey];
+    const key = knowledgeSectionKey(group, layerKey);
+    const collapsed = !(knowledgeSectionState.has(key) ? knowledgeSectionState.get(key) : rows.length > 0);
+
+    return `
+        <div class="psychograph-knowledge-section${collapsed ? "" : " open"}" data-group="${escapeHtmlAttribute(group)}" data-layer="${layerKey}">
+            <div class="psychograph-knowledge-section-header interactable" tabindex="0">
+                <i class="fa-solid fa-chevron-${collapsed ? "right" : "down"}"></i>
+                <span>${layer.label}</span>
+                <span class="psychograph-sheet-count">${rows.length}</span>
+            </div>
+            <div class="psychograph-knowledge-entries">
+                ${rows.map((row) => buildKnowledgeEntryHtml(layerKey, row)).join("")}
+                <div class="psychograph-knowledge-add interactable" data-group="${escapeHtmlAttribute(group)}" data-layer="${layerKey}" tabindex="0">
+                    <i class="fa-solid fa-plus"></i> Add ${layer.label.toLowerCase().replace(/s$/, "")}
+                </div>
+            </div>
+        </div>
+    `;
+}
+
+function renderKnowledgeGroups() {
+    const groups = collectKnowledgeGroups();
+    const total = KNOWLEDGE_KEYS.reduce((sum, key) => sum + readKnowledgeEntries(KNOWLEDGE_LAYERS[key]).length, 0);
+
+    const html = [...groups.entries()].map(([group, rowsByLayer]) => `
+        <div class="psychograph-knowledge-group" data-group="${escapeHtmlAttribute(group)}">
+            <input type="text" class="psychograph-knowledge-group-name" value="${escapeHtmlAttribute(group)}"
+                placeholder="${UNNAMED_KNOWLEDGE_GROUP}" title="Renaming moves every entry below to that name" />
+            ${KNOWLEDGE_KEYS.map((key) => buildKnowledgeSectionHtml(group, key, rowsByLayer[key])).join("")}
+        </div>
+    `).join("");
+
+    $("#psychograph_knowledge_groups").html(html);
+    $("#psychograph_knowledge_count").text(`${total} ${total === 1 ? "entry" : "entries"}`);
+}
+
+function renderSheetFooter() {
+    const chatState = ensureChatState();
+    const last = chatState.lastExtraction;
+    $("#psychograph_sheet_status").text(
+        last && last.index >= 0 ? `last extraction · msg #${last.index}` : "nothing extracted yet",
+    );
+    $("#psychograph_sheet_restore").toggleClass("disabled", !chatState.previous);
+}
+
+// The three layers share one set of buttons. Nothing orders them against each
+// other, so one press runs all three at once.
+async function runForEveryKnowledgeLayer(action) {
+    await Promise.all(KNOWLEDGE_KEYS.map((key) => action(KNOWLEDGE_LAYERS[key])));
+}
+
+async function extractActiveSheetTabNow() {
+    if (activeSheetTab === SHEET_TIMELINE_TAB) {
+        await rerunTimelineExtractionNow();
+        return;
+    }
+    if (activeSheetTab === SHEET_KNOWLEDGE_TAB) {
+        await runForEveryKnowledgeLayer(rerunKnowledgeExtractionNow);
+        return;
+    }
+    await rerunAreaExtractionNow(activeSheetTab);
+}
+
+async function rerunTimelineExtractionNow() {
+    const settings = ensureSettings();
+    if (!settings.connectionProfile) {
+        toastr.warning(NO_PROFILE_WARNING, "Psychograph");
+        return;
+    }
+
+    const message = getContext().chat.at(-1);
+    if (!isTimelineMessage(message, settings.timeline.includeHidden)) {
+        toastr.warning("The last message is a system or hidden message, nothing to analyze.", "Psychograph");
+        return;
+    }
+
+    toastr.info("Checking the last message for a timeline entry…", "Psychograph");
+    captureUndoSnapshot("the timeline entry");
+    const outcome = await queueTimelineWork(() => extractTimelineEntry(settings.connectionProfile, message));
+    markTimelineExtracted(message);
+
+    if (outcome === TIMELINE_ADDED) {
+        toastr.success("Entry added to the timeline.", "Psychograph");
+    } else if (outcome === TIMELINE_DISCARDED) {
+        toastr.info("Entry discarded as too minor.", "Psychograph");
+    } else if (outcome === TIMELINE_FAILED) {
+        toastr.error("The timeline call failed, see the console.", "Psychograph");
+    } else {
+        toastr.info("Nothing worth logging in that message.", "Psychograph");
+    }
+}
+
+function bindSheetEvents() {
+    const panel = $(`#${SHEET_ID}`);
+
+    $("#psychograph_sheet_close").on("click", function () {
+        panel.removeClass("shown");
+    });
+
+    panel.on("click", ".psychograph-sheet-tab", function () {
+        selectSheetTab(String($(this).data("tab")));
+    });
+
+    panel.on("click", ".psychograph-sheet-options-toggle", function () {
+        $(`.psychograph-sheet-options[data-tab="${$(this).data("tab")}"]`).toggleClass("shown");
+    });
+
+    $("#psychograph_sheet_extract").on("click", extractActiveSheetTabNow);
+    $("#psychograph_sheet_restore").on("click", restorePreviousState);
+    $("#psychograph_knowledge_build").on("click", buildAllKnowledge);
+
+    $("#psychograph_knowledge_clear").on("click", async function () {
+        const context = getContext();
+        const confirmed = await context.callGenericPopup(
+            "Clear the facts, dispositions and triggers of this chat? Restore previous can bring them back until the next extraction.",
+            context.POPUP_TYPE.CONFIRM,
+        );
+        if (confirmed !== context.POPUP_RESULT.AFFIRMATIVE) {
+            return;
+        }
+
+        captureUndoSnapshot("clearing the knowledge lists");
+        for (const key of KNOWLEDGE_KEYS) {
+            // Cleared by hand means the card should be read again on the next
+            // pass, or an emptied list would stay empty for the rest of the chat.
+            ensureChatState().knowledge[key].seeded = false;
+            writeKnowledgeEntries(KNOWLEDGE_LAYERS[key], []);
+        }
+    });
+
+    $("#psychograph_knowledge_add_group").on("click", function () {
+        const layer = KNOWLEDGE_LAYERS[KNOWLEDGE_KEYS[0]];
+        writeKnowledgeEntries(layer, [
+            ...readKnowledgeEntries(layer),
+            Object.fromEntries(layer.fields.map((field) => [field, ""])),
+        ]);
+        $(".psychograph-knowledge-group").last().find(".psychograph-knowledge-group-name").trigger("focus");
+    });
+
+    panel.on("click", ".psychograph-knowledge-section-header", function () {
+        const section = $(this).closest(".psychograph-knowledge-section");
+        const key = knowledgeSectionKey(String(section.data("group")), String(section.data("layer")));
+        knowledgeSectionState.set(key, !section.hasClass("open"));
+        renderKnowledgeGroups();
+    });
+
+    panel.on("click", ".psychograph-knowledge-add[data-layer]", function () {
+        const layer = KNOWLEDGE_LAYERS[String($(this).data("layer"))];
+        const group = String($(this).data("group"));
+        knowledgeSectionState.set(knowledgeSectionKey(group, layer.id), true);
+        writeKnowledgeEntries(layer, [
+            ...readKnowledgeEntries(layer),
+            Object.fromEntries(layer.fields.map((field) => [field, field === layer.groupBy ? group : ""])),
+        ]);
+    });
+
+    // Renaming moves every entry under that heading, across all three layers —
+    // fixing "Milly" to "Milena" once is the common case, and it merges the two
+    // groups as a side effect.
+    panel.on("change", ".psychograph-knowledge-group-name", function () {
+        const previous = String($(this).closest(".psychograph-knowledge-group").data("group"));
+        const name = String($(this).val()).trim();
+        captureUndoSnapshot("renaming a group");
+        for (const key of KNOWLEDGE_KEYS) {
+            const layer = KNOWLEDGE_LAYERS[key];
+            const entries = readKnowledgeEntries(layer).map((entry) =>
+                (entry[layer.groupBy] || "") === previous ? { ...entry, [layer.groupBy]: name } : entry);
+            ensureChatState().knowledge[key].entries = entries;
+        }
+        getContext().saveMetadataDebounced();
+        renderKnowledgeGroups();
+    });
+
+    panel.on("change", ".psychograph-knowledge-owner-input", function () {
+        renderKnowledgeGroups();
+    });
+
+    panel.on("input", ".psychograph-knowledge-input", function () {
+        const layer = KNOWLEDGE_LAYERS[String($(this).closest(".psychograph-knowledge-entry").data("layer"))];
+        const index = Number($(this).closest(".psychograph-knowledge-entry").data("index"));
+        const entries = readKnowledgeEntries(layer);
+        if (!entries[index]) {
+            return;
+        }
+        entries[index][String($(this).data("field"))] = String($(this).val());
+        getContext().saveMetadataDebounced();
+    });
+
+    panel.on("click", ".psychograph-knowledge-delete", function () {
+        const entryElement = $(this).closest(".psychograph-knowledge-entry");
+        const layer = KNOWLEDGE_LAYERS[String(entryElement.data("layer"))];
+        const index = Number(entryElement.data("index"));
+        captureUndoSnapshot(`deleting a ${layer.label.toLowerCase()} entry`);
+        writeKnowledgeEntries(layer, readKnowledgeEntries(layer).filter((_, position) => position !== index));
+    });
+
 }
 
 function buildToolbarButton() {
@@ -1574,7 +3545,7 @@ function buildToolbarButton() {
     }
 
     $(buttonContainer).append(`
-        <div id="psychograph_menu_button" class="psychograph-toolbar-button fa-solid fa-brain interactable" title="Psychograph" tabindex="0"></div>
+        <div id="psychograph_menu_button" class="psychograph-toolbar-button fa-solid fa-brain interactable" title="Character sheet" tabindex="0"></div>
         <div class="psychograph-guided-buttons">
             <div id="psychograph_guided_swipe_button" class="psychograph-toolbar-button fa-solid fa-forward interactable" title="Guided Swipe" tabindex="0"></div>
             <div id="psychograph_guided_message_button" class="psychograph-toolbar-button fa-solid fa-comment-dots interactable" title="Guided Message" tabindex="0"></div>
@@ -1585,34 +3556,16 @@ function buildToolbarButton() {
     $("#psychograph_guided_message_button").on("click", guidedMessage);
     $("#psychograph_guided_swipe_button").on("click", guidedSwipe);
     $("#psychograph_guided_continue_button").on("click", guidedContinue);
-
-    $("body").append(`
-        <div id="psychograph_submenu" class="psychograph-tools-menu">
-            ${buildAreaSubmenuHtml()}
-        </div>
-    `);
-
-    $("#psychograph_menu_button").on("click", function (event) {
-        event.stopPropagation();
-        togglePsychographSubmenu(this);
-    });
-
-    $("#psychograph_submenu").on("click", function (event) {
-        event.stopPropagation();
-    });
-
-    $(document).on("click", function () {
-        $("#psychograph_submenu").removeClass("shown");
-    });
-
-    bindAreaSubmenuEvents();
+    $("#psychograph_menu_button").on("click", toggleSheetPanel);
 }
 
 jQuery(async () => {
     const settingsHtml = await $.get(`${extensionFolderPath}/settings.html`);
     $("#extensions_settings2").append(settingsHtml);
 
+    buildSheetPanel();
     bindSettingsEvents();
+    bindSheetEvents();
     bindChatEvents();
     buildToolbarButton();
     renderSettings();

@@ -63,8 +63,20 @@ reliably force structured output end-to-end:
   `TABBY` or `LLAMACPP` (`guided_json` for Aphrodite). Any other type
   (including a generic/OpenAI-compatible text-completion source) silently
   drops it — no error, the field is just absent from the outgoing request.
-- **Chat Completion (`cc`)**: no evidence of `response_format`/`json_schema`
-  support in SillyTavern's chat-completion payload builder at all.
+- **Chat Completion (`cc`)**: supported, but under a different field than the
+  OpenAI wire format. The client sends `json_schema: {name, value, strict}`
+  (note `value`, not `schema`) and `src/endpoints/backends/chat-completions.js`
+  translates it per provider — `response_format` for OpenAI-compatible sources,
+  `input_schema` on a forced tool call for Claude, `responseSchema` for Gemini,
+  and a system message spelling out the schema for the ones that support
+  nothing (AI21, DeepSeek). A generic fallback at the end of the handler
+  covers every source that didn't set `response_format` itself, so `CUSTOM`
+  (a self-hosted OpenAI-compatible endpoint) is covered too. Sending
+  `response_format` directly does *not* work: the server builds its request
+  body from named fields and never passes it through.
+- On the `cc` path only, `ChatCompletionService` also `JSON.parse`s the reply
+  when `json_schema` was in the request, so `response.content` comes back as
+  an **object** rather than a string. Parse defensively either way.
 
 Confirmed by testing directly (curl) against a real backend: when
 enforcement *does* work, it's real grammar-constrained decoding and it
@@ -206,6 +218,26 @@ completely absent from what a prompt inspector shows for the Context
 Template/system-prompt block, even though the `/inject` call itself
 succeeded - it went into the chat-history splice point instead, which is
 outside that template entirely.
+
+## What `is_system` actually means on a chat message
+
+`is_system: true` is not one thing, and it is the only flag `/hide` sets.
+Verified in `scripts/chats.js` and `scripts/slash-commands.js`:
+
+| Message | `is_system` | `extra.type` | Story text? |
+|---|---|---|---|
+| Normal user/character message | `false` | unset | yes |
+| Hidden via `/hide` | `true` | unchanged (unset) | yes — hiding only removes it from the *context*, `hideChatMessageRange` flips the flag and nothing else |
+| `/sys` narration | `false` | `narrator` | yes |
+| `/sys` that only sets a bias | `true` | `narrator` | no |
+| `/comment` note | `true` | `comment` | no (OOC) |
+| ST's own UI messages (welcome, help, hotkeys, …) | `true` | the type name | no |
+
+So `!message.is_system` alone reads as "is in the context right now", not as
+"is story text". To tell ST's own messages from story text, use `extra.type`:
+`getSystemMessageByType` stamps it on every system message, `sendCommentMessage`
+sets `comment`, and a normal message never carries it — with `narrator` as the
+one type that *is* story text.
 
 ## Debugging tip: clone, don't fetch
 

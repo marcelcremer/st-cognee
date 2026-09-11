@@ -9,6 +9,7 @@
                 <input id="psychograph_enabled" type="checkbox" />
                 Enable Psychograph
             </label>
+            <small>The character sheet itself lives in a panel next to the chat &mdash; open it with the brain button above the input box.</small>
 
             <hr>
             <div class="inline-drawer">
@@ -19,115 +20,40 @@
                 <div class="inline-drawer-content">
                     <label for="psychograph_connection_profile">SillyTavern connection profile</label>
                     <select id="psychograph_connection_profile" class="text_pole"></select>
-                    <small>Connection used for Psychograph's own extraction calls (state, core memories, lore). "SillyTavern default" uses whatever connection is currently active.</small>
+                    <small>Connection used for Psychograph's own extraction calls (state, timeline, lore). "SillyTavern default" uses whatever connection is currently active.</small>
                 </div>
             </div>
 
             <hr>
             <div class="inline-drawer">
                 <div class="inline-drawer-toggle inline-drawer-header">
-                    <span>State</span>
+                    <span>Rerank &amp; Embeddings</span>
                     <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
                 </div>
                 <div class="inline-drawer-content">
-                    <div class="inline-drawer">
-                        <div class="inline-drawer-toggle inline-drawer-header">
-                            <span>General</span>
-                            <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
-                        </div>
-                        <div class="inline-drawer-content">
-                            <label for="psychograph_state_target">Applies to</label>
-                            <select id="psychograph_state_target">
-                                <option value="char">Character</option>
-                                <option value="user">User</option>
-                            </select>
-                            <small>Whether tracked state reflects the character or the user persona. Extraction runs on every message either way — this decides whose state the character-scoped areas track.</small>
-                        </div>
-                    </div>
+                    <small>Called directly, not through SillyTavern &mdash; it has no route for either (its only vector endpoint stores collections and returns no scores). Generation keeps going through the connection profile above.</small>
 
-                    <div class="inline-drawer">
-                        <div class="inline-drawer-toggle inline-drawer-header">
-                            <span>Clothes</span>
-                            <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
-                        </div>
-                        <div class="inline-drawer-content">
-                            <label class="checkbox_label" for="psychograph_state_clothes_enabled">
-                                <input id="psychograph_state_clothes_enabled" type="checkbox" />
-                                Enabled
-                            </label>
+                    <label for="psychograph_similarity_base_url">Base URL</label>
+                    <input id="psychograph_similarity_base_url" type="text" class="text_pole" placeholder="http://localhost:8080" />
+                    <label for="psychograph_similarity_api_key">API Key</label>
+                    <input id="psychograph_similarity_api_key" type="password" class="text_pole" placeholder="leave empty if the server needs none" />
+                    <label for="psychograph_similarity_rerank_model">Rerank model</label>
+                    <input id="psychograph_similarity_rerank_model" type="text" class="text_pole" placeholder="model name the server expects" />
+                    <label for="psychograph_similarity_embedding_model">Embedding model</label>
+                    <input id="psychograph_similarity_embedding_model" type="text" class="text_pole" placeholder="model name the server expects" />
 
-                            <label>Current state</label>
-                            <label for="psychograph_state_clothes_slot_top">Top</label>
-                            <input id="psychograph_state_clothes_slot_top" type="text" class="text_pole" placeholder="none" />
-                            <label for="psychograph_state_clothes_slot_bottom">Bottom</label>
-                            <input id="psychograph_state_clothes_slot_bottom" type="text" class="text_pole" placeholder="none" />
-                            <label for="psychograph_state_clothes_slot_underwear">Underwear</label>
-                            <input id="psychograph_state_clothes_slot_underwear" type="text" class="text_pole" placeholder="none" />
-                            <label for="psychograph_state_clothes_slot_legwear">Legwear</label>
-                            <input id="psychograph_state_clothes_slot_legwear" type="text" class="text_pole" placeholder="none" />
-                            <label for="psychograph_state_clothes_slot_footwear">Footwear</label>
-                            <input id="psychograph_state_clothes_slot_footwear" type="text" class="text_pole" placeholder="none" />
-                            <label for="psychograph_state_clothes_slot_accessories">Accessories</label>
-                            <input id="psychograph_state_clothes_slot_accessories" type="text" class="text_pole" placeholder="none" />
-                            <label for="psychograph_state_clothes_slot_hair">Hair</label>
-                            <input id="psychograph_state_clothes_slot_hair" type="text" class="text_pole" placeholder="none" />
-                            <label for="psychograph_state_clothes_slot_makeup">Makeup</label>
-                            <input id="psychograph_state_clothes_slot_makeup" type="text" class="text_pole" placeholder="none" />
-                        </div>
-                    </div>
+                    <label for="psychograph_similarity_threshold">Duplicate threshold</label>
+                    <input id="psychograph_similarity_threshold" type="number" min="0" max="1" step="0.05" class="text_pole" />
+                    <small>A new knowledge entry scoring at or above this against an existing one for the same character counts as the same thing. Every candidate's closest match and score go to the console, so this can be read off real entries rather than guessed. Knowledge only &mdash; the timeline is untouched.</small>
 
-                    <div class="inline-drawer">
-                        <div class="inline-drawer-toggle inline-drawer-header">
-                            <span>Body</span>
-                            <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
-                        </div>
-                        <div class="inline-drawer-content">
-                            <label class="checkbox_label" for="psychograph_state_physical_state_enabled">
-                                <input id="psychograph_state_physical_state_enabled" type="checkbox" />
-                                Enabled
-                            </label>
+                    <label class="checkbox_label" for="psychograph_similarity_merge">
+                        <input id="psychograph_similarity_merge" type="checkbox" />
+                        Merge duplicates with a model call
+                    </label>
+                    <small>Off: the duplicate is dropped and the existing entry stays as it is. On: one small call writes the entry that replaces both.</small>
 
-                            <label>Current state</label>
-                            <label for="psychograph_state_physical_state_slot_condition">Condition</label>
-                            <input id="psychograph_state_physical_state_slot_condition" type="text" class="text_pole" placeholder="injury, illness, exhaustion, hunger, intoxication" />
-                            <label for="psychograph_state_physical_state_slot_constraint">Constraint</label>
-                            <input id="psychograph_state_physical_state_slot_constraint" type="text" class="text_pole" placeholder="what limits their freedom to act" />
-                            <label for="psychograph_state_physical_state_slot_bodyChanges">Body Changes</label>
-                            <input id="psychograph_state_physical_state_slot_bodyChanges" type="text" class="text_pole" placeholder="lasting differences from the profile description" />
-                        </div>
-                    </div>
-
-                    <div class="inline-drawer">
-                        <div class="inline-drawer-toggle inline-drawer-header">
-                            <span>Scene</span>
-                            <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
-                        </div>
-                        <div class="inline-drawer-content">
-                            <label class="checkbox_label" for="psychograph_state_situational_enabled">
-                                <input id="psychograph_state_situational_enabled" type="checkbox" />
-                                Enabled
-                            </label>
-
-                            <label>Current state</label>
-                            <label for="psychograph_state_situational_slot_location">Location</label>
-                            <input id="psychograph_state_situational_slot_location" type="text" class="text_pole" placeholder="where they are, and how private or exposed" />
-                            <label for="psychograph_state_situational_slot_presentPeople">Present People</label>
-                            <input id="psychograph_state_situational_slot_presentPeople" type="text" class="text_pole" placeholder="who is in the scene" />
-                            <label for="psychograph_state_situational_slot_timeOfDay">Time of Day</label>
-                            <input id="psychograph_state_situational_slot_timeOfDay" type="text" class="text_pole" placeholder="not established" />
-                        </div>
-                    </div>
-                </div>
-            </div>
-
-            <hr>
-            <div class="inline-drawer">
-                <div class="inline-drawer-toggle inline-drawer-header">
-                    <span>Core Memories</span>
-                    <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
-                </div>
-                <div class="inline-drawer-content">
-                    <small>Coming soon.</small>
+                    <div id="psychograph_similarity_test" class="menu_button">Test both</div>
+                    <small id="psychograph_similarity_status"></small>
                 </div>
             </div>
 
