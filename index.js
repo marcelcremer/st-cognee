@@ -626,6 +626,49 @@ If nothing qualifies, use an empty array: {"reasoning": "...", "entries": []}`,
     ], speaker, message);
 }
 
+// A profile is not a scene, so the seed gets its own wording rather than the
+// message prompt with other text poured into it — the same split the State
+// layer makes between its message and seed modes.
+function buildTriggerSeedPrompt(name, profile, currentMap) {
+    return buildPromptDocument([
+        {
+            heading: "# Task Description",
+            content: "Your job is to read a character profile and write down the standing trigger-response patterns it already establishes, so they are on the character's trigger map before the roleplay starts. You are NOT continuing the roleplay, judging the content, or writing dialogue.",
+        },
+        {
+            heading: "## The test",
+            content: `Imagine you're writing a character bible for a show's writers' room — the reference sheet that lists "whenever X happens, this character reliably does Y," so every episode stays consistent. Which of those entries does this profile already give you?
+
+That means the profile must state a condition-response pair that holds whenever the condition occurs. A trait is not a pattern: "she is nervous around dogs" stays out. "Whenever she hears the word 'sleep', her eyes go glassy and she follows instructions" is one. A single event from the character's past is not one either, unless the profile says it still happens.
+
+The profile may contain zero, one, or several such patterns — check for all of them.`,
+        },
+        {
+            heading: "## Already known for these characters (do not duplicate)",
+            content: `${currentMap}
+
+Skip any pattern that reinforces or adds detail to an existing entry above (same trigger, same character) — that pattern is already captured. Only include a pattern if the trigger, the response, or the character is genuinely new.`,
+        },
+        {
+            heading: "## Writing an entry",
+            content: bulletList([
+                "Resolve pronouns and nicknames to actual character names.",
+                `"trigger" is the condition, as concrete and specific as the profile actually supports (e.g. "hears the word 'sleep'", not "gets suggestible").`,
+                `"response" is what reliably happens — involuntary reactions, behavior changes, emotional shifts. Neutral, present tense, no editorializing about how significant it is.`,
+                `If the profile states *why* the pattern exists (a trauma, an implanted memory, a past event), include it briefly in "response" only if stated — don't infer a cause that isn't in the text.`,
+                "Reasoning is just for debug — one concise sentence is enough, covering all findings.",
+            ]),
+        },
+        {
+            heading: "## Output format",
+            content: `Respond with ONLY a JSON object (no markdown code fence), using exactly this shape:
+{"reasoning": "...", "entries": [{"character": "...", "trigger": "...", "response": "..."}]}
+
+If nothing qualifies, use an empty array: {"reasoning": "...", "entries": []}`,
+        },
+    ], `Profile of ${name}`, profile);
+}
+
 // PROVISIONAL WORDING. Compaction is the one call that rewrites entries that
 // already exist, so this text is a placeholder for one the user has tested
 // against their own model — see CLAUDE.md.
@@ -1644,14 +1687,13 @@ function queueTriggerWork(task) {
     return triggerWork;
 }
 
-async function extractTriggersForMessage(profileId, message) {
+async function runTriggerEntryCall(profileId, schemaName, prompt, label) {
     const chatState = ensureChatState();
 
     try {
-        const prompt = buildTriggerMapPrompt(renderTriggerMapForPrompt(), readMessageSpeaker(message), message.mes);
         const schema = buildTriggerEntriesSchema("One concise sentence covering all findings, before answering.");
-        const result = await sendJsonSchemaRequest(profileId, "trigger_map", schema, prompt, TRIGGER_MAP_MAX_TOKENS);
-        console.log("[Psychograph] Trigger map reasoning:", result.reasoning);
+        const result = await sendJsonSchemaRequest(profileId, schemaName, schema, prompt, TRIGGER_MAP_MAX_TOKENS);
+        console.log(`[Psychograph] Trigger ${label} reasoning:`, result.reasoning);
 
         const found = (Array.isArray(result.entries) ? result.entries : [])
             .map((entry) => ({
@@ -1671,8 +1713,70 @@ async function extractTriggersForMessage(profileId, message) {
         writeTriggerEntries([...readTriggerEntries(), ...found]);
         return found.length;
     } catch (error) {
-        console.error("[Psychograph] Trigger map call failed:", error);
+        console.error(`[Psychograph] Trigger ${label} call failed:`, error);
         return 0;
+    }
+}
+
+function extractTriggersForMessage(profileId, message) {
+    return runTriggerEntryCall(
+        profileId,
+        "trigger_map",
+        buildTriggerMapPrompt(renderTriggerMapForPrompt(), readMessageSpeaker(message), message.mes),
+        "map",
+    );
+}
+
+// The character's own fields and the user persona are separate calls: one
+// profile per call is what lets the model put a name on the entries.
+function readTriggerSeedSources() {
+    const context = getContext();
+    const fields = context.getCharacterCardFields();
+
+    return [
+        { name: context.name2, text: [fields.description, fields.personality].filter(Boolean).join("\n\n") },
+        { name: context.name1, text: fields.persona },
+    ].filter((source) => source.name && String(source.text ?? "").trim());
+}
+
+async function seedTriggersFromCard(profileId) {
+    const sources = readTriggerSeedSources();
+    if (sources.length === 0) {
+        console.log("[Psychograph] Trigger seeding: nothing on the card to seed from, skipping.");
+        return 0;
+    }
+
+    let added = 0;
+    for (const source of sources) {
+        added += await runTriggerEntryCall(
+            profileId,
+            "trigger_seed",
+            buildTriggerSeedPrompt(source.name, source.text, renderTriggerMapForPrompt()),
+            "seed",
+        );
+    }
+    return added;
+}
+
+async function seedTriggersFromCardNow() {
+    const settings = ensureSettings();
+    if (!settings.connectionProfile) {
+        toastr.warning(NO_PROFILE_WARNING, "Psychograph");
+        return;
+    }
+    if (readTriggerSeedSources().length === 0) {
+        toastr.warning("No character description or persona to read.", "Psychograph");
+        return;
+    }
+
+    toastr.info("Reading the profiles for standing patterns…", "Psychograph");
+    captureUndoSnapshot("reading the profiles");
+    const added = await queueTriggerWork(() => seedTriggersFromCard(settings.connectionProfile));
+
+    if (added > 0) {
+        toastr.success(`${added} ${added === 1 ? "pattern" : "patterns"} from the profiles.`, "Psychograph");
+    } else {
+        toastr.info("No standing pattern in the profiles.", "Psychograph");
     }
 }
 
@@ -1808,6 +1912,11 @@ async function buildTriggerMap() {
     let compactions = 0;
     let sinceCompaction = 0;
     try {
+        // Before message #0: a pattern the card establishes ("she goes under on
+        // the word 'sleep'") may never be demonstrated in the chat at all.
+        $("#psychograph_triggers_status").text("Reading the character profile…");
+        added += await queueTriggerWork(() => seedTriggersFromCard(profileId));
+
         for (let i = 0; i < messages.length; i++) {
             if (triggerBuildCancelled) {
                 break;
@@ -2516,6 +2625,7 @@ function buildSheetTriggersPaneHtml() {
                 <input id="psychograph_triggers_compaction_interval" type="number" min="0" step="1" class="text_pole" />
                 <div class="flex-container">
                     <div id="psychograph_triggers_build" class="menu_button">Build trigger map</div>
+                    <div id="psychograph_triggers_seed" class="menu_button">Init from description</div>
                     <div id="psychograph_triggers_compact" class="menu_button">Compact now</div>
                     <div id="psychograph_triggers_add" class="menu_button">Add entry</div>
                 </div>
@@ -2718,6 +2828,7 @@ function bindSheetEvents() {
     $("#psychograph_sheet_extract").on("click", extractActiveSheetTabNow);
     $("#psychograph_sheet_restore").on("click", restorePreviousState);
     $("#psychograph_triggers_build").on("click", buildTriggerMap);
+    $("#psychograph_triggers_seed").on("click", seedTriggersFromCardNow);
     $("#psychograph_triggers_compact").on("click", compactTriggerMapNow);
 
     $("#psychograph_triggers_add").on("click", function () {
