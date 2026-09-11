@@ -1540,6 +1540,7 @@ function queueTimelineWork(task) {
 const TIMELINE_ADDED = "added";
 const TIMELINE_DISCARDED = "discarded";
 const TIMELINE_SKIPPED = "skipped";
+const TIMELINE_FAILED = "failed";
 
 async function extractTimelineEntry(profileId, message) {
     const chatState = ensureChatState();
@@ -1565,7 +1566,7 @@ async function extractTimelineEntry(profileId, message) {
         return TIMELINE_ADDED;
     } catch (error) {
         console.error("[Psychograph] Timeline call failed:", error);
-        return TIMELINE_SKIPPED;
+        return TIMELINE_FAILED;
     }
 }
 
@@ -1903,9 +1904,27 @@ async function buildTimeline() {
     timelineBuildCancelled = false;
     $("#psychograph_timeline_build").text("Stop");
 
-    let added = 0;
-    let discarded = 0;
+    // Every message lands in exactly one of these, so the status line adds up:
+    // most messages produce no candidate at all, which the earlier line left
+    // unaccounted for and made the numbers look wrong.
+    const tally = { [TIMELINE_ADDED]: 0, [TIMELINE_DISCARDED]: 0, [TIMELINE_SKIPPED]: 0, [TIMELINE_FAILED]: 0 };
+    let processed = 0;
+
+    const renderBuildStatus = () => {
+        const parts = [
+            `${processed}/${messages.length} messages`,
+            `${tally[TIMELINE_ADDED]} added`,
+            `${tally[TIMELINE_DISCARDED]} discarded`,
+            `${tally[TIMELINE_SKIPPED]} nothing to log`,
+        ];
+        if (tally[TIMELINE_FAILED] > 0) {
+            parts.push(`${tally[TIMELINE_FAILED]} failed`);
+        }
+        $("#psychograph_timeline_status").text(`${parts.join(" · ")}…`);
+    };
+
     try {
+        renderBuildStatus();
         for (let i = 0; i < messages.length; i++) {
             if (timelineBuildCancelled) {
                 break;
@@ -1915,21 +1934,17 @@ async function buildTimeline() {
                 break;
             }
 
-            const message = messages[i];
-            $("#psychograph_timeline_status").text(`Message ${i + 1}/${messages.length}, ${added} entries added, ${discarded} discarded…`);
-
-            const outcome = await queueTimelineWork(() => extractTimelineEntry(profileId, message));
-            markTimelineExtracted(message);
-            if (outcome === TIMELINE_ADDED) {
-                added++;
-            } else if (outcome === TIMELINE_DISCARDED) {
-                discarded++;
-            }
+            const outcome = await queueTimelineWork(() => extractTimelineEntry(profileId, messages[i]));
+            markTimelineExtracted(messages[i]);
+            tally[outcome] += 1;
+            processed += 1;
+            renderBuildStatus();
         }
 
-        const summary = `${added} new entries, ${discarded} discarded as too minor.`;
+        const failures = tally[TIMELINE_FAILED] > 0 ? `, ${tally[TIMELINE_FAILED]} calls failed` : "";
+        const summary = `${processed} messages read, ${tally[TIMELINE_ADDED]} entries added, ${tally[TIMELINE_DISCARDED]} discarded as too minor${failures}.`;
         if (timelineBuildCancelled) {
-            toastr.info(`Stopped after ${summary}`, "Psychograph");
+            toastr.info(`Stopped: ${summary}`, "Psychograph");
         } else {
             toastr.success(`Timeline built: ${summary}`, "Psychograph");
         }
@@ -2678,6 +2693,8 @@ async function rerunTimelineExtractionNow() {
         toastr.success("Entry added to the timeline.", "Psychograph");
     } else if (outcome === TIMELINE_DISCARDED) {
         toastr.info("Entry discarded as too minor.", "Psychograph");
+    } else if (outcome === TIMELINE_FAILED) {
+        toastr.error("The timeline call failed, see the console.", "Psychograph");
     } else {
         toastr.info("Nothing worth logging in that message.", "Psychograph");
     }
