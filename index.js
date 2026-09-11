@@ -1068,32 +1068,42 @@ function markTimelineExtracted(message) {
     getContext().saveMetadataDebounced();
 }
 
+// Fills in what is missing without replacing the object. Rebuilding it on every
+// call handed out a fresh copy each time, so anything holding a reference to a
+// settings branch across an await was writing into a discarded object — which
+// is how the rerank path was stored and then reported as empty.
+function fillDefaults(target, defaults) {
+    const filled = target ?? {};
+    for (const [key, value] of Object.entries(defaults)) {
+        if (filled[key] === undefined) {
+            filled[key] = structuredClone(value);
+        }
+    }
+    return filled;
+}
+
 function ensureSettings() {
     if (!extension_settings[extensionName]) {
         extension_settings[extensionName] = structuredClone(defaultSettings);
     }
 
     const settings = extension_settings[extensionName];
-    settings.cognee = Object.assign(structuredClone(defaultSettings.cognee), settings.cognee);
-    settings.similarity = Object.assign(structuredClone(defaultSettings.similarity), settings.similarity);
-    settings.timeline = Object.assign(structuredClone(defaultSettings.timeline), settings.timeline);
+    settings.cognee = fillDefaults(settings.cognee, defaultSettings.cognee);
+    settings.similarity = fillDefaults(settings.similarity, defaultSettings.similarity);
+    settings.timeline = fillDefaults(settings.timeline, defaultSettings.timeline);
     settings.knowledge = settings.knowledge || {};
     for (const key of KNOWLEDGE_KEYS) {
-        settings.knowledge[key] = Object.assign(
-            structuredClone(defaultSettings.knowledge[key]),
-            // The trigger layer predates the other two and had settings of its own.
-            key === "triggers" ? settings.triggers : undefined,
-            settings.knowledge[key],
-        );
+        // The trigger layer predates the other two and had settings of its own.
+        if (key === "triggers" && settings.triggers) {
+            settings.knowledge.triggers = fillDefaults(settings.knowledge.triggers, settings.triggers);
+        }
+        settings.knowledge[key] = fillDefaults(settings.knowledge[key], defaultSettings.knowledge[key]);
     }
     delete settings.triggers;
     settings.state = settings.state || {};
     settings.state.areas = settings.state.areas || {};
     for (const { key } of STATE_AREAS) {
-        settings.state.areas[key] = Object.assign(
-            structuredClone(defaultSettings.state.areas[key]),
-            settings.state.areas[key],
-        );
+        settings.state.areas[key] = fillDefaults(settings.state.areas[key], defaultSettings.state.areas[key]);
     }
     if (settings.enabled === undefined) {
         settings.enabled = defaultSettings.enabled;
