@@ -928,6 +928,15 @@ function buildKnowledgeSchema(layer, reasoningDescription) {
 const defaultSettings = {
     enabled: true,
     connectionProfile: "",
+    similarity: {
+        baseUrl: "",
+        apiKey: "",
+        rerankModel: "",
+        embeddingModel: "",
+        // Which of the two spellings this server answered on, so the working
+        // one is not re-discovered on every call.
+        rerankPath: "",
+    },
     cognee: {
         baseUrl: "",
         apiKey: "",
@@ -1066,6 +1075,7 @@ function ensureSettings() {
 
     const settings = extension_settings[extensionName];
     settings.cognee = Object.assign(structuredClone(defaultSettings.cognee), settings.cognee);
+    settings.similarity = Object.assign(structuredClone(defaultSettings.similarity), settings.similarity);
     settings.timeline = Object.assign(structuredClone(defaultSettings.timeline), settings.timeline);
     settings.knowledge = settings.knowledge || {};
     for (const key of KNOWLEDGE_KEYS) {
@@ -1288,6 +1298,20 @@ function bindSettingsEvents() {
         shownConfigWarnings.clear();
         saveSettingsDebounced();
     });
+
+    for (const [field, id] of [
+        ["baseUrl", "base_url"],
+        ["apiKey", "api_key"],
+        ["rerankModel", "rerank_model"],
+        ["embeddingModel", "embedding_model"],
+    ]) {
+        $(`#psychograph_similarity_${id}`).on("input", function () {
+            ensureSettings().similarity[field] = String($(this).val()).trim();
+            saveSettingsDebounced();
+        });
+    }
+
+    $("#psychograph_similarity_test").on("click", testSimilarityService);
 
     $("#psychograph_cognee_base_url").on("input", function () {
         ensureSettings().cognee.baseUrl = String($(this).val());
