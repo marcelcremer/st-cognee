@@ -142,16 +142,22 @@ export const AREA_SLOT_CONFIGS = {
         icon: "fa-heart-pulse",
         slots: PHYSICAL_STATE_SLOTS,
         slotPlaceholders: {
-            condition: "injury, illness, exhaustion, hunger, intoxication",
-            constraint: "what limits their freedom to act",
-            bodyChanges: "lasting differences from the profile description",
+            condition: "injury, illness, exhaustion, hunger, intoxication, drugs",
+            constraint: "what stops them from acting freely, for now",
+            bodyChanges: "permanent differences from the profile description",
         },
         seedField: "target",
         emptyValue: "",
-        groupDescription: "Body slots track the character's body and what currently limits their ability to act.",
+        groupDescription: [
+            "Body slots track the character's body and what currently limits their ability to act. Every fact belongs in exactly one of the three slots:",
+            "- condition: the body is in bad shape right now - injury, illness, pain, exhaustion, sleep deprivation, hunger, dehydration, intoxication, drugs, poisoning. It passes or heals.",
+            "- constraint: something currently stops the character from acting freely - being tied up, held down, locked in, or guarded, or a body that will not obey them right now (limping, an arm gone numb, unable to see). It can be lifted again.",
+            "- bodyChanges: a permanent difference from the body the profile describes - a tattoo, a piercing, a scar, surgery, an implant, an amputation. It cannot be undone.",
+        ].join("\n"),
         diffRules: [
             "For each slot, determine whether the message contains any information about it.",
             "If you find any information for a slot, mark it true. Otherwise mark it false.",
+            "Each fact belongs to exactly one slot: how the body is doing is condition, what the character is prevented from doing is constraint, what is permanently different about the body is bodyChanges.",
         ],
         seedDiffRules: [
             "For each slot, determine whether the profile describes it.",
@@ -170,14 +176,14 @@ export const AREA_SLOT_CONFIGS = {
         ],
         seedDiffReasoningDescription: "One short clause per slot (condition, constraint, in that order), noting whether the profile describes it and why.",
         seedSlotDescriptions: {
-            condition: "True if the profile describes a bodily state the character is in — injury, illness, exhaustion, hunger, or intoxication.",
-            constraint: "True if the profile describes what limits the character's freedom to act — being restrained, confined, guarded, or under an obligation they cannot simply walk away from.",
+            condition: "True if the profile describes the character's body being in bad shape — injury, illness, pain, exhaustion, sleep deprivation, hunger, dehydration, intoxication, drugs, or poisoning. Not a permanent change to the body, and not being restrained.",
+            constraint: "True if the profile describes what stops the character from acting freely — being tied up, held down, confined, or guarded, or a body part that will not obey them (limping, a numb arm, unable to see). Not how the body feels, and not a permanent change to it.",
         },
         diffReasoningDescription: "One short clause per slot (condition, constraint, bodyChanges, in that order), noting whether the message contains information about it and why.",
         slotDescriptions: {
-            condition: "True if the message contains information about the character's temporary bodily state — injury, illness, exhaustion, hunger, or intoxication.",
-            constraint: "True if the message contains information about what currently limits the character's freedom to act — being restrained, confined, guarded, or under an obligation they cannot simply walk away from.",
-            bodyChanges: "True if the message establishes a lasting change to the character's body compared to how they are described in their profile, whether deliberate (a tattoo, a piercing) or not (weight, a scar, visible aging).",
+            condition: "True if the message contains information about the character's body being in bad shape right now — injury, illness, pain, exhaustion, sleep deprivation, hunger, dehydration, intoxication, drugs, or poisoning. Not a permanent change to the body, and not being restrained.",
+            constraint: "True if the message contains information about what currently stops the character from acting freely — being tied up, held down, confined, or guarded, or a body part that will not obey them (limping, a numb arm, unable to see). Not how the body feels, and not a permanent change to it.",
+            bodyChanges: "True if the message establishes a permanent difference from the character's body as described in their profile — a tattoo, a piercing, a scar, surgery, an implant, an amputation, or lasting change in weight or aging. Not a temporary state that heals or wears off, and not being restrained.",
         },
         slotOverrides: {
             // Only slot that stores a delta rather than a value, so it is the
@@ -189,9 +195,9 @@ export const AREA_SLOT_CONFIGS = {
                 profileContext: () => readTargetProfileText(),
                 updateRules: [
                     "Output ONLY how the body now differs from the profile above. Never repeat anything the profile already says.",
-                    `If the message establishes a new lasting change, append it to the existing entries, separated by "; ".`,
+                    `If the message establishes a new permanent change, append it to the existing entries, separated by "; ".`,
                     "Keep existing entries unless the message explicitly reverses one.",
-                    "If nothing lasting changed, return the entries unchanged.",
+                    "If nothing permanent changed, return the entries unchanged.",
                     `Output "none" if the body does not differ from the profile at all.`,
                 ],
             },
