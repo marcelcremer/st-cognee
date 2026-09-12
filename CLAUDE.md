@@ -80,6 +80,35 @@ This applies to every layer, not just initial scaffolding — resist adding a
 state-management library, a graph-viz library, etc. unless the task genuinely
 can't be done without one.
 
+## Code from other projects
+
+Never copy source from another project into this repository when its licence
+is copyleft (GPL, AGPL, LGPL, MPL) or carries an attribution requirement (MIT,
+BSD, Apache-2.0) — which in practice means every licence, and an unlicensed
+project most of all. Reimplement instead.
+
+What is worth taking from another project is what its code reveals about the
+*host system* — that `swipe.right()` only generates from the newest swipe,
+which DOM element a button has to be a sibling of, which field a backend
+actually reads. Those are facts about SillyTavern, not the other project's
+expression, and they are free to use. Its code is not: read it to learn what
+the constraint is, then write our own solution to that constraint, in this
+repo's own structure and naming.
+
+Two things follow:
+
+- Findings of that kind belong in
+  [`docs/sillytavern-ui-notes.md`](docs/sillytavern-ui-notes.md), written as
+  the finding itself, so nothing has to be re-derived and no reference
+  checkout has to be kept around.
+- Naming the project a finding came from, in that file or in a comment, is
+  worth doing and changes nothing about the above — crediting an observation
+  is not the same as copying an implementation.
+
+This is a rule about what enters the repo, not about what may be read. Cloning
+another extension and reading it to understand SillyTavern is fine and
+encouraged; it is how most of the UI notes were established.
+
 ## Code comments
 
 Default to no comments. Only add one when nothing else (types, tests, naming,
