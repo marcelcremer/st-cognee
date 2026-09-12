@@ -182,6 +182,7 @@ together on jQuery ready. Everything else lives under `src/`:
 |---|---|
 | `src/sillytavern.js` | Every import into SillyTavern's own source, and nowhere else. The depths differ per file and an extra `../` 404s silently at load time, so they are kept in one place. |
 | `src/constants.js` | Extension name/path and the `message`/`seed` extraction modes. |
+| `src/stscript.js` | Making a value safe to pass as a slash-command argument. Imports nothing, so both `src/injects.js` and `src/ui/` can use it without closing an import cycle. |
 | `src/settings.js` | Global `extension_settings` branch: defaults and `ensureSettings()`. |
 | `src/chat-state.js` | The per-chat `chat_metadata` branch: `ensureChatState()`, the layout migrations, and who the sheet is about. |
 | `src/messages.js` | What counts as a story/timeline message, and the per-message "already extracted" markers. |
@@ -196,7 +197,7 @@ together on jQuery ready. Everything else lives under `src/`:
 | `src/layers/motivation/` | `drivers.js` — the eight drivers, the five continuation rules, the standing goal block, and the inject they build. `lottery.js` — the per-turn draw, the lock, the chat's goal, and the roll recorded on each message. |
 | `src/layers/cognee.js` | The Cognee client: chat-scoped datasets, ingestion, backfill, recall. |
 | `src/injects.js` | Every `setExtensionPrompt` the memory layers make, and the generation hook that refreshes them. |
-| `src/ui/` | `settings-panel.js`, `sheet.js`, `guided.js`, `toolbar.js`, `message-buttons.js`, `housekeeping.js`. |
+| `src/ui/` | `settings-panel.js`, `sheet.js`, `guided.js` (the input-bar actions: guided message/swipe/continue and send-without-reply), `toolbar.js`, `message-buttons.js`, `housekeeping.js`. |
 | `src/events.js` | The SillyTavern event bindings. |
 
 Two conventions worth keeping:

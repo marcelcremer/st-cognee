@@ -1,4 +1,4 @@
-import { guidedContinue, guidedMessage, guidedSwipe } from "./guided.js";
+import { guidedContinue, guidedMessage, guidedSwipe, simpleSend } from "./guided.js";
 import { toggleSheetPanel } from "./sheet.js";
 
 export function buildToolbarButton() {
@@ -31,12 +31,14 @@ export function buildToolbarButton() {
             <div id="psychograph_guided_swipe_button" class="psychograph-toolbar-button fa-solid fa-forward interactable" title="Guided Swipe" tabindex="0"></div>
             <div id="psychograph_guided_message_button" class="psychograph-toolbar-button fa-solid fa-comment-dots interactable" title="Guided Message" tabindex="0"></div>
             <div id="psychograph_guided_continue_button" class="psychograph-toolbar-button fa-solid fa-arrow-right interactable" title="Guided Continue" tabindex="0"></div>
+            <div id="psychograph_simple_send_button" class="psychograph-toolbar-button fa-solid fa-paper-plane interactable" title="Send without a reply" tabindex="0"></div>
         </div>
     `);
 
     $("#psychograph_guided_message_button").on("click", guidedMessage);
     $("#psychograph_guided_swipe_button").on("click", guidedSwipe);
     $("#psychograph_guided_continue_button").on("click", guidedContinue);
+    $("#psychograph_simple_send_button").on("click", simpleSend);
     $("#psychograph_menu_button").on("click", toggleSheetPanel);
 }
 

@@ -1,4 +1,5 @@
 import { getContext } from "./sillytavern.js";
+import { sanitizeStscriptValue } from "./stscript.js";
 import { ensureChatState, readTargetName } from "./chat-state.js";
 import { getCogneeChatId, recallFromCognee } from "./layers/cognee.js";
 import { KNOWLEDGE_KEYS, KNOWLEDGE_LAYERS } from "./layers/knowledge/layers.js";
@@ -19,12 +20,6 @@ const CONTEXT_INJECT_ID = "psychograph_context";
 
 const STATE_INJECT_HEADING = "## Current state information";
 
-// "|" ends a slash command, so a slot value carrying one would truncate the
-// inject and run whatever followed as a command of its own.
-function sanitizeInjectValue(value) {
-    return String(value).replace(/[|\r\n]+/g, " ").trim();
-}
-
 // "timeOfDay" -> "time of day". The slot keys are identifiers; the inject is
 // prose the model reads.
 function humanizeSlotName(slot) {
@@ -43,7 +38,7 @@ function buildStateSnapshot() {
 
         const config = AREA_SLOT_CONFIGS[key];
         const lines = config.slots
-            .map((slot) => [slot, sanitizeInjectValue(chatState.areas[key].slots[slot] ?? "")])
+            .map((slot) => [slot, sanitizeStscriptValue(chatState.areas[key].slots[slot] ?? "")])
             .filter(([, value]) => value)
             .map(([slot, value]) => `- ${humanizeSlotName(slot)}: ${value}`);
         if (lines.length === 0) {
@@ -72,7 +67,7 @@ function buildTimelineSnapshot() {
 
     const entries = readTimeline()
         .split("\n")
-        .map((line) => sanitizeInjectValue(line).replace(/^[-*]\s*/, ""))
+        .map((line) => sanitizeStscriptValue(line).replace(/^[-*]\s*/, ""))
         .filter(Boolean);
     if (entries.length === 0) {
         return "";
@@ -98,7 +93,7 @@ function buildKnowledgeSnapshot() {
 
         const lines = readKnowledgeEntries(layer)
             .filter((entry) => layer.fields.every((field) => entry[field]))
-            .map((entry) => sanitizeInjectValue(layer.injectEntry(entry)));
+            .map((entry) => sanitizeStscriptValue(layer.injectEntry(entry)));
         if (lines.length === 0) {
             return "";
         }
@@ -167,7 +162,7 @@ async function refreshMotivationInject() {
 
     const goal = readMotivationGoal();
     const snapshot = [
-        goal.enabled ? buildGoalInject(sanitizeInjectValue(goal.text)) : "",
+        goal.enabled ? buildGoalInject(sanitizeStscriptValue(goal.text)) : "",
         buildMotivationInject(nextMotivationRoll()),
     ].filter(Boolean).join("\n\n");
     if (!snapshot) {

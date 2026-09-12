@@ -243,6 +243,29 @@ fires it. Anything gated on it needs a second release path.
 code. `context.swipe.right()` (SillyTavern ≥ 1.13.0) triggers a new swipe
 generation programmatically.
 
+Three things about that pair are easy to get wrong:
+
+- **`swipe.right()` only generates from the newest swipe.** From any earlier
+  one it steps forward through the swipes that already exist, and generates
+  nothing. Anything that means "generate another swipe" has to move
+  `swipe_id` to `swipes.length - 1` first — setting `mes` from
+  `swipes[target]`, `extra` from `swipe_info[target].extra`, re-rendering
+  `.mes_text` via `context.messageFormatting()` and the `.swipes-counter`
+  elements, then emitting `MESSAGE_SWIPED`. `swipes` and `swipe_info` are two
+  parallel arrays and both have to stay aligned.
+- **A user message is not swipeable or continuable.** Neither call validates
+  this; check `chat[chat.length - 1].is_user` before either.
+- **`{{input}}` beats interpolating the input bar's text.** The macro is
+  substituted after the command has been parsed, so `/send {{input}}` survives
+  a message containing `|`, where `/send ${textarea.value}` would truncate at
+  the pipe and run the remainder as a command. Where a macro won't do, strip
+  `|` and newlines from the value first (`src/stscript.js`).
+
+`/continue` writes into the last message in place rather than appending a new
+one, so anything wanting to undo it has to read `mes` *before* the call. The
+new text is also written to `swipes[swipe_id]`, so restoring only `mes` brings
+the continuation back on the next re-render.
+
 ## `/inject` position mapping (verified against `script.js`/`openai.js`)
 
 `/inject position=<before|after|chat|none>` maps to
