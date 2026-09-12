@@ -15,6 +15,10 @@ const SITUATIONAL_SLOTS = ["location", "presentPeople", "timeOfDay"];
 
 export const AREA_DIFF_MAX_TOKENS = 250;
 
+// Eight short values plus a clause per slot. A truncated answer is invalid JSON,
+// which loses the whole area rather than one slot.
+export const AREA_OBSERVATION_MAX_TOKENS = 500;
+
 export const AREA_SLOT_UPDATE_MAX_TOKENS = 200;
 
 export const AREA_GATE_MAX_TOKENS = 200;
@@ -64,6 +68,38 @@ export const AREA_SLOT_CONFIGS = {
             `Use "none" if the profile says nothing about this slot.`,
             "Do not invent details that were not stated in the profile.",
         ],
+        // Ran 3/3 against the repo owner's model on a scene that had defeated the
+        // boolean diff plus per-slot update. Only the pronoun differs from the
+        // tested text, so a character of any gender reads the same.
+        observation: {
+            intro: (target) => `Your job is to read one message and report what it says ${target} is wearing. You are not updating anything and you do not know what was worn before. Report only what this message states.`,
+            slots: {
+                top: "shirts, jackets, coats and anything else worn on the upper body",
+                bottom: "pants, skirts, shorts, a dress's lower half",
+                underwear: "bra, panties, boxers",
+                legwear: "stockings, tights, pantyhose, socks, garters",
+                footwear: "shoes, boots, heels",
+                accessories: "jewellery, glasses, hats, belts, chokers and similar",
+                hair: "the hairstyle",
+                makeup: "makeup",
+            },
+            rules: (target) => [
+                "Answer for every slot, in the order listed above.",
+                `If the message says nothing about a slot, answer exactly "not mentioned".`,
+                `If the message states that a slot is bare, or that what was there is taken off and nothing replaces it, answer exactly "none".`,
+                "Otherwise answer with what the message says is worn there, in a few words.",
+                "Do not guess what is worn elsewhere, and do not carry an item into a slot it does not belong to.",
+                `Only what ${target} wears counts. What anyone else wears is ignored.`,
+                "Do not invent anything the message does not state.",
+            ],
+            examples: [
+                `Message: *She stands at the mirror in a loose grey sweatshirt, tugging at the hem.*`,
+                `{"reasoning": "top: grey sweatshirt. bottom: nothing said. underwear: nothing said. legwear: nothing said. footwear: nothing said. accessories: nothing said. hair: nothing said. makeup: nothing said.", "top": "loose grey sweatshirt", "bottom": "not mentioned", "underwear": "not mentioned", "legwear": "not mentioned", "footwear": "not mentioned", "accessories": "not mentioned", "hair": "not mentioned", "makeup": "not mentioned"}`,
+                "",
+                `Message: *She kicks off her boots at the door and pads into the kitchen barefoot.*`,
+                `{"reasoning": "top: nothing said. bottom: nothing said. underwear: nothing said. legwear: nothing said. footwear: boots come off, feet bare. accessories: nothing said. hair: nothing said. makeup: nothing said.", "top": "not mentioned", "bottom": "not mentioned", "underwear": "not mentioned", "legwear": "not mentioned", "footwear": "none", "accessories": "not mentioned", "hair": "not mentioned", "makeup": "not mentioned"}`,
+            ].join("\n"),
+        },
         hints: [
             "Legwear covers the leg above the ankle, Footwear the foot.",
             "an accessory typically refers to an item worn to complement or enhance a garment or appearance",

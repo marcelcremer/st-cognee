@@ -1,5 +1,6 @@
 import { SEED_MODE } from "../constants.js";
 import { AREA_SLOT_CONFIGS } from "../layers/state/areas.js";
+import { readTargetName } from "../chat-state.js";
 import { buildAttributionRule, buildHintSection, buildPromptDocument, buildSheetIntro, bulletList, qualifiedSlotName } from "./document.js";
 
 export function buildAreaDiffPrompt(config, slots, message, speaker, mode) {
@@ -43,6 +44,52 @@ export function buildAreaDiffSchema(config, slots, mode) {
     };
     for (const slot of slots) {
         properties[slot] = { type: "boolean", description: slotDescriptions[slot] };
+    }
+    return {
+        type: "object",
+        properties,
+        required: ["reasoning", ...slots],
+        additionalProperties: false,
+    };
+}
+
+// The shape that tested 3/3 against the repo owner's model: every slot a required
+// field, one clause per slot forced in the reasoning, and no sheet in the prompt -
+// asked what *changed*, or handed the sheet, the same model answered "nothing" and
+// claimed the message's items were already on it.
+export function buildAreaObservationPrompt(config, slots, message, speaker) {
+    const observation = config.observation;
+    const target = readTargetName();
+
+    return buildPromptDocument([
+        { heading: "# Task Description", content: observation.intro(target) },
+        {
+            heading: "## Slots",
+            content: bulletList(slots.map((slot) => `${slot}: ${observation.slots[slot]}`)),
+        },
+        { heading: "## Rules", content: bulletList(observation.rules(target)) },
+        { heading: "## Examples", content: observation.examples },
+        {
+            heading: "## Output format",
+            content: `Respond with ONLY a JSON object (no markdown code fence). Fill in "reasoning" first\n- one short clause per slot, in the order listed above - then the ${slots.length} slots, using\nexactly this shape:\n${JSON.stringify({ reasoning: "...", ...Object.fromEntries(slots.map((slot) => [slot, "..."])) })}`,
+        },
+    ], speaker, message);
+}
+
+export const NOT_MENTIONED = "not mentioned";
+
+export function buildAreaObservationSchema(config, slots) {
+    const properties = {
+        reasoning: {
+            type: "string",
+            description: `One short clause per slot (${slots.join(", ")}, in that order), saying what the message states about it.`,
+        },
+    };
+    for (const slot of slots) {
+        properties[slot] = {
+            type: "string",
+            description: `What the message says is in this slot, "none" if it says the slot is bare, or "${NOT_MENTIONED}" if it says nothing about it.`,
+        };
     }
     return {
         type: "object",
