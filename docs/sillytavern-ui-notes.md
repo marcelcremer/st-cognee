@@ -347,6 +347,29 @@ So `!message.is_system` alone reads as "is in the context right now", not as
 sets `comment`, and a normal message never carries it — with `narrator` as the
 one type that *is* story text.
 
+## Hiding messages from JS (`/hide`, `/unhide`)
+
+`hideChatMessageRange(start, end, unhide, nameFilter)` (`scripts/chats.js`) is
+what both commands call, and it is not on `getContext()` — the reachable entry
+point is the slash command:
+`context.executeSlashCommandsWithOptions('/hide 4-11')`. Verified against
+`slash-commands.js`/`chats.js`/`utils.js`:
+
+- The unnamed argument is an index or an **inclusive** range parsed by
+  `stringToRange`, i.e. `4-11`, or `4` for a single message. Out-of-bounds or
+  reversed ranges parse to `null` and the command no-ops with a console
+  warning. Omitting the argument entirely targets the **last** message, which
+  is rarely what a script wants.
+- Per message it sets `is_system`, mirrors it onto the `.mes[mesid]` block's
+  `is_system` attribute, then calls `refreshSwipeButtons()` and
+  `saveChatConditional()` once for the whole range. So one call per contiguous
+  range, not per message — each call writes the chat file.
+- `/unhide` over a range is **not** the inverse of "was hidden by `/hide`": it
+  clears `is_system` on everything in the range, so a `/comment` note or one of
+  ST's own UI messages caught in the range becomes a normal, injected message.
+  Anything that unhides a range has to build it from story messages only
+  (`extra.type` unset, or `narrator`).
+
 ## Debugging tip: clone, don't fetch
 
 Web-fetching SillyTavern's large core files (`index.html`, `script.js`,
