@@ -11,6 +11,7 @@ import { rerunTimelineExtractionNow } from "../layers/timeline/extraction.js";
 import { readTimeline } from "../layers/timeline/store.js";
 import { ensureSettings } from "../settings.js";
 import { captureUndoSnapshot, restorePreviousState } from "../undo.js";
+import { SHEET_HOUSEKEEPING_TAB, bindHousekeepingEvents, buildSheetHousekeepingPaneHtml, renderHousekeeping } from "./housekeeping.js";
 import { renderChatState } from "./settings-panel.js";
 
 const SHEET_ID = "psychograph_sheet";
@@ -33,6 +34,7 @@ function buildSheetTabsHtml() {
         ...STATE_AREAS.map(({ key }) => ({ key, label: AREA_SLOT_CONFIGS[key].label })),
         { key: SHEET_TIMELINE_TAB, label: "Timeline" },
         { key: SHEET_KNOWLEDGE_TAB, label: "Knowledge" },
+        { key: SHEET_HOUSEKEEPING_TAB, label: "Housekeeping" },
     ];
     return tabs.map(({ key, label }) => `
         <div class="psychograph-sheet-tab" data-tab="${key}">${label}</div>
@@ -204,6 +206,7 @@ function buildSheetBodyHtml() {
             ${STATE_AREAS.map(({ key }) => buildSheetAreaPaneHtml(key)).join("")}
             ${buildSheetTimelinePaneHtml()}
             ${buildSheetKnowledgePaneHtml()}
+            ${buildSheetHousekeepingPaneHtml()}
         </div>
         <div class="psychograph-sheet-footer">
             <span id="psychograph_sheet_status" class="psychograph-sheet-hint"></span>
@@ -267,8 +270,9 @@ export function toggleSheetPanel() {
 function selectSheetTab(tab) {
     activeSheetTab = tab;
     const isMotivation = tab === SHEET_MOTIVATION_TAB;
-    $(`#${SHEET_ID} .psychograph-sheet-applies`).toggle(!isMotivation);
-    $("#psychograph_sheet_extract").text(isMotivation ? "Roll again" : "Extract now");
+    const isHousekeeping = tab === SHEET_HOUSEKEEPING_TAB;
+    $(`#${SHEET_ID} .psychograph-sheet-applies`).toggle(!isMotivation && !isHousekeeping);
+    $("#psychograph_sheet_extract").toggle(!isHousekeeping).text(isMotivation ? "Roll again" : "Extract now");
     $(`#${SHEET_ID} .psychograph-sheet-tab`).each(function () {
         $(this).toggleClass("active", String($(this).data("tab")) === tab);
     });
@@ -293,6 +297,7 @@ export function renderSheetHeader() {
     const entries = readTimeline().split("\n").filter((line) => line.trim()).length;
     $("#psychograph_sheet_timeline_count").text(`${entries} ${entries === 1 ? "entry" : "entries"}`);
     renderKnowledgeGroups();
+    renderHousekeeping();
     renderSheetFooter();
 }
 
@@ -415,6 +420,9 @@ async function runForEveryKnowledgeLayer(action) {
 }
 
 async function extractActiveSheetTabNow() {
+    if (activeSheetTab === SHEET_HOUSEKEEPING_TAB) {
+        return;
+    }
     if (activeSheetTab === SHEET_MOTIVATION_TAB) {
         rollMotivation();
         return;
@@ -467,6 +475,8 @@ export function bindSheetEvents() {
             writeMotivationSelection(field, String($(this).val()));
         });
     }
+
+    bindHousekeepingEvents();
 
     $("#psychograph_sheet_extract").on("click", extractActiveSheetTabNow);
     $("#psychograph_sheet_restore").on("click", restorePreviousState);

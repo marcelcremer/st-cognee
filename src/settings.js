@@ -35,6 +35,10 @@ const defaultSettings = {
     motivation: {
         enabled: true,
     },
+    housekeeping: {
+        enabled: true,
+        keepVisible: 0,
+    },
     timeline: {
         autoExtract: true,
         includeHidden: true,
@@ -66,6 +70,7 @@ export function ensureSettings() {
     settings.cognee = fillDefaults(settings.cognee, defaultSettings.cognee);
     settings.similarity = fillDefaults(settings.similarity, defaultSettings.similarity);
     settings.timeline = fillDefaults(settings.timeline, defaultSettings.timeline);
+    settings.housekeeping = fillDefaults(settings.housekeeping, defaultSettings.housekeeping);
     settings.motivation = fillDefaults(settings.motivation, defaultSettings.motivation);
     settings.knowledge = settings.knowledge || {};
     for (const key of KNOWLEDGE_KEYS) {

@@ -1,5 +1,6 @@
 import { eventSource, event_types, getContext } from "./sillytavern.js";
 import { flushCogneeRecallInject, flushContextInject, flushLegacyInjects, flushMotivationInject, handleCogneeRecall, handleInjectsForGeneration } from "./injects.js";
+import { applyHousekeeping } from "./housekeeping.js";
 import { handleCogneeIngestion } from "./layers/cognee.js";
 import { extractKnowledgeForNewMessage } from "./layers/knowledge/extraction.js";
 import { KNOWLEDGE_KEYS, KNOWLEDGE_LAYERS } from "./layers/knowledge/layers.js";
@@ -9,6 +10,7 @@ import { extractTimelineForNewMessage } from "./layers/timeline/extraction.js";
 import { NO_PROFILE_WARNING, warnOnce } from "./llm/request.js";
 import { markMotivationRoll } from "./messages.js";
 import { ensureSettings } from "./settings.js";
+import { renderHousekeepingCount } from "./ui/housekeeping.js";
 import { renderChatState, renderCogneeChatSection } from "./ui/settings-panel.js";
 import { captureUndoSnapshot } from "./undo.js";
 
@@ -45,6 +47,19 @@ function handleChatMessageEvent() {
     };
 }
 
+// Awaited on purpose, unlike the extractions above: a message sent is hidden
+// before Generate() builds the prompt from it, so the window applies to the
+// very next generation rather than to the one after it. The automatic pass only
+// hides — unhiding is "Apply now", so it cannot undo a /hide done by hand.
+async function handleHousekeeping() {
+    const settings = ensureSettings();
+    if (!settings.enabled || !settings.housekeeping.enabled) {
+        return;
+    }
+    await applyHousekeeping({ unhide: false });
+    renderHousekeepingCount();
+}
+
 // The roll that was injected belongs to the message it produced, so it is
 // stamped on the received one only - a sent message was written by the user.
 function handleMotivationRecord(messageId) {
@@ -74,6 +89,9 @@ export function bindChatEvents() {
     eventSource.on(event_types.GENERATION_ENDED, flushContextInject);
     eventSource.on(event_types.GENERATION_ENDED, flushMotivationInject);
     eventSource.on(event_types.CHAT_CHANGED, flushLegacyInjects);
+
+    eventSource.on(event_types.MESSAGE_SENT, handleHousekeeping);
+    eventSource.on(event_types.MESSAGE_RECEIVED, handleHousekeeping);
 
     eventSource.on(event_types.MESSAGE_RECEIVED, handleMotivationRecord);
 
