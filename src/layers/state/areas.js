@@ -150,9 +150,9 @@ export const AREA_SLOT_CONFIGS = {
         emptyValue: "",
         groupDescription: [
             "Body slots track the character's body and what currently limits their ability to act. Every fact belongs in exactly one of the three slots:",
-            "- condition: the body is in bad shape right now - injury, illness, pain, exhaustion, sleep deprivation, hunger, dehydration, intoxication, drugs, poisoning. It passes or heals.",
-            "- constraint: something currently stops the character from acting freely - being tied up, held down, locked in, or guarded, or a body that will not obey them right now (limping, an arm gone numb, unable to see). It can be lifted again.",
-            "- bodyChanges: a permanent difference from the body the profile describes - a tattoo, a piercing, a scar, surgery, an implant, an amputation. It cannot be undone.",
+            "- condition: the body is in bad shape right now - injury, illness, pain, exhaustion, sleep deprivation, hunger, dehydration, intoxication, drugs, poisoning. It passes once the body recovers.",
+            "- constraint: something currently stops the character from acting freely - being tied up, held down, locked in, or guarded, or a body that will not obey them right now (limping, an arm gone numb, unable to see). It ends when whatever holds them gives way.",
+            "- bodyChanges: a permanent difference from the body the profile describes - a tattoo, a piercing, a scar, surgery, an implant, an amputation. It does not end on its own - removing it later would be another deliberate change to the body, not a return to normal. A piercing counts: its jewelry can be taken out, but the hole through the body stays.",
         ].join("\n"),
         diffRules: [
             "For each slot, determine whether the message contains any information about it.",
@@ -183,7 +183,7 @@ export const AREA_SLOT_CONFIGS = {
         slotDescriptions: {
             condition: "True if the message contains information about the character's body being in bad shape right now — injury, illness, pain, exhaustion, sleep deprivation, hunger, dehydration, intoxication, drugs, or poisoning. Not a permanent change to the body, and not being restrained.",
             constraint: "True if the message contains information about what currently stops the character from acting freely — being tied up, held down, confined, or guarded, or a body part that will not obey them (limping, a numb arm, unable to see). Not how the body feels, and not a permanent change to it.",
-            bodyChanges: "True if the message establishes a permanent difference from the character's body as described in their profile — a tattoo, a piercing, a scar, surgery, an implant, an amputation, or lasting change in weight or aging. Not a temporary state that heals or wears off, and not being restrained.",
+            bodyChanges: "True if the message establishes a permanent difference from the character's body as described in their profile — a tattoo, a piercing, a scar, surgery, an implant, an amputation, or lasting change in weight or aging. Not a temporary state that heals or wears off, and not being restrained. A piercing counts even though its jewelry is removable — what stays is the hole, not the ring.",
         },
         slotOverrides: {
             // Only slot that stores a delta rather than a value, so it is the
